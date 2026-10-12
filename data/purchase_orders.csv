@@ -1,0 +1,13 @@
+po_number,vendor_id,po_date,currency,po_amount,invoiced_to_date,status,description
+PO-1033,V003,2026-07-10,INR,250000,250000,closed,ERW steel tubes 25mm
+PO-1037,V001,2026-09-02,INR,118000,0,open,M8 hex bolts and nuts
+PO-1040,V002,2026-09-08,INR,236000,0,open,HDPE granules 2 MT
+PO-1041,V002,2026-09-15,INR,236000,0,open,HDPE granules 2 MT (lot 2)
+PO-1042,V003,2026-08-20,INR,500000,300000,open,ERW steel tubes 50mm (phased delivery)
+PO-1045,V004,2026-09-18,INR,59000,0,open,Corrugated cartons 5-ply
+PO-1048,V005,2026-09-22,INR,177000,0,open,Industrial bearings and seals
+PO-1050,V006,2026-09-25,INR,94400,0,open,Control panel components
+PO-1051,V001,2026-09-28,INR,47200,0,open,Anchor fasteners
+PO-1052,V005,2026-10-01,INR,82600,0,open,Hydraulic hoses
+PO-1053,V004,2026-10-03,INR,35400,0,open,Stretch film
+PO-1054,V002,2026-10-05,INR,141600,0,open,PP copolymer 1 MT

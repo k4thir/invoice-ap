@@ -1,0 +1,8 @@
+vendor_id,legal_name,aliases,gstin,state_code,state,tolerance_pct,status
+V001,Shree Krishna Fasteners Pvt Ltd,SK Fasteners|Shree Krishna Fasteners|SKF Pune,27AABCS1234F1Z5,27,Maharashtra,2,approved
+V002,Deccan Polymers LLP,Deccan Polymers|Deccan Poly,27AAFFD5678K1Z3,27,Maharashtra,2,approved
+V003,Bharat Steel Tubes Ltd,Bharat Steel|BST Ltd|Bharat Steel Tubes,24AAACB9012H1Z7,24,Gujarat,2,approved
+V004,Pune Packaging Co,Pune Packaging|PPC,27AAEFP3456M1Z9,27,Maharashtra,2,approved
+V005,Nexora Industrial Supplies Pvt Ltd,Nexora|Nexora Industrial,29AACCN7890P1Z1,29,Karnataka,5,approved
+V006,Sahyadri Electricals,Sahyadri Electricals Pvt Ltd,27AAGCS2345Q1Z4,27,Maharashtra,2,approved
+V007,Konark Logistics,Konark,21AABCK4567R1Z2,21,Odisha,2,inactive
