@@ -30,16 +30,13 @@ def _norm_name(s: str) -> str:
 
 
 def load_vendors() -> pd.DataFrame:
-    df = pd.read_csv(config.DATA_DIR / "vendors.csv", dtype=str).fillna("")
-    df["tolerance_pct"] = pd.to_numeric(df["tolerance_pct"], errors="coerce").fillna(config.DEFAULT_TOLERANCE_PCT)
-    return df
+    from . import reference
+    return reference.load_default_vendors()
 
 
 def load_pos() -> pd.DataFrame:
-    df = pd.read_csv(config.DATA_DIR / "purchase_orders.csv", dtype=str).fillna("")
-    for c in ("po_amount", "invoiced_to_date"):
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-    return df
+    from . import reference
+    return reference.load_default_pos()
 
 
 def _val(fields, key):
@@ -48,8 +45,8 @@ def _val(fields, key):
 
 
 # ----------------------------------------------------------------- vendor
-def match_vendor(fields: dict) -> dict:
-    vendors = load_vendors()
+def match_vendor(fields: dict, vendors: pd.DataFrame = None) -> dict:
+    vendors = load_vendors() if vendors is None else vendors.fillna("")
     gstin = _val(fields, "vendor_gstin")
     name = _val(fields, "vendor_name")
     result = {"vendor_id": None, "legal_name": None, "tolerance_pct": config.DEFAULT_TOLERANCE_PCT, "status": None,
@@ -81,8 +78,10 @@ def match_vendor(fields: dict) -> dict:
                       status=row["status"], approved=(row["status"] == "approved"))
         how = "GSTIN" if result["method"] == "gstin" else f"name similarity {result['score']:.2f}"
         if result["approved"]:
+            result["how"] = f"Matched by {how}; tolerance {result['tolerance_pct']:g}%"
             result["summary"] = f"{row['legal_name']} ({row['vendor_id']}) matched by {how}; tolerance {result['tolerance_pct']:g}%"
         else:
+            result["how"] = f"Matched by {how}, but status is '{row['status']}'"
             result["summary"] = f"{row['legal_name']} ({row['vendor_id']}) matched by {how} but status is '{row['status']}'"
     elif not name and not gstin:
         result["summary"] = "No vendor name or GSTIN extracted, so nothing to match"
@@ -90,10 +89,14 @@ def match_vendor(fields: dict) -> dict:
 
 
 # ----------------------------------------------------------------- purchase order
-def match_po(fields: dict, vendor: dict, ledger_extra: dict, today: date = None) -> dict:
+def match_po(fields: dict, vendor: dict, ledger_extra: dict, pos: pd.DataFrame = None, today: date = None) -> dict:
     """ledger_extra: {po_number: amount already approved by this system}, from store.po_ledger()."""
     today = today or date.today()
-    pos = load_pos()
+    pos = load_pos() if pos is None else pos
+    pos = pos.copy()
+    for c in ("po_amount", "invoiced_to_date"):
+        pos[c] = pd.to_numeric(pos[c], errors="coerce").fillna(0.0)
+    pos = pos.fillna("")
     total = _val(fields, "total")
     ref = _val(fields, "po_reference")
     inv_date = _val(fields, "invoice_date")

@@ -382,19 +382,23 @@ def layout_d(path, v, inv_no, inv_date, po, items):
 
 # ---------------------------------------------------------------- scan
 def make_scan(src_pdf, dst_pdf, seed=7):
+    """Photocopy-grade scan: low render DPI, slight skew, grain, speckle, JPEG artefacts.
+    Lands around 84% mean Tesseract confidence: readable, but below the 90% bar that routes a scan to the AI."""
+    import io
     from pdf2image import convert_from_path
     random.seed(seed)
     np.random.seed(seed)
-    img = convert_from_path(str(src_pdf), dpi=200)[0].convert("L")
-    img = img.rotate(0.9, resample=Image.BICUBIC, expand=False, fillcolor=255)
+    img = convert_from_path(str(src_pdf), dpi=100)[0].convert("L")
+    img = img.rotate(1.8, resample=Image.BICUBIC, expand=False, fillcolor=255)
     arr = np.asarray(img).astype(np.int16)
-    noise = np.random.normal(0, 9, arr.shape)
-    arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
-    img = Image.fromarray(arr).filter(ImageFilter.GaussianBlur(0.6))
-    # slight contrast fade, as a photocopy would have
-    img = img.point(lambda p: int(min(255, p * 0.96 + 12)))
-    img = img.convert("RGB")
-    img.save(str(dst_pdf), "PDF", resolution=200.0)
+    arr = np.clip(arr + np.random.normal(0, 16, arr.shape), 0, 255)
+    speck = np.random.rand(*arr.shape) < 0.006
+    arr[speck] = np.random.choice([0, 255], size=speck.sum())
+    img = Image.fromarray(arr.astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.8))
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=25)
+    buf.seek(0)
+    Image.open(buf).convert("L").save(str(dst_pdf), "PDF", resolution=100.0)
 
 
 def main():

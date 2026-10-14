@@ -1,24 +1,34 @@
 """
-Stage 2c - Merge.
+Merging rule and AI extractions under the fallback-first policy.
 
-Two extractors looked at the same text. For each field:
-  both found it and agree      -> confidence high,   source "both"
-  only one found it            -> confidence medium, source "rules" or "ai"
-  both found it and disagree   -> confidence low,    we pick one and record the conflict:
-        text fields (names, numbers-as-identifiers, dates): take the AI value, it reads layout better
-        amounts: take the rules value, it is anchored to a printed label; validation will arbitrate
-The merged record is what every later stage reads. Nothing is dropped: the
-original candidates stay in the run record for the human to see.
+Two situations:
+
+fill_gaps(merged, ai_fields)
+    Text PDFs and good scans. Rules already populated what they could; the AI
+    was asked only for the gaps. AI values are added as source "ai", confidence
+    medium. Nothing the rules found is overwritten.
+
+reconcile(rules_fields, ai_fields)
+    Poor scans (OCR confidence below the threshold). The AI read the whole
+    document because the OCR text itself is unreliable. Per field:
+        both agree       -> high,   source "both"
+        only AI          -> medium, source "ai"
+        only rules       -> medium, source "rules"   (unverified, but a label was there)
+        disagree         -> low,    keep the AI value, record the conflict
+    On a poor scan the rules are the weaker witness, so conflicts go to the AI;
+    validation (arithmetic) still has the final say.
+
+base_confidence(path)
+    What a rules-found field is worth on its own: high on a text layer,
+    medium on OCR text.
 """
 import difflib
 import re
 
 from . import config
 
-TEXT_FIELDS = {"vendor_name", "vendor_gstin", "invoice_number", "invoice_date", "po_reference"}
 
-
-def _norm_text(s):
+def _norm(s):
     return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 
@@ -29,59 +39,53 @@ def _agree(key, a, b):
         except (TypeError, ValueError):
             return False
     if key == "vendor_name":
-        return difflib.SequenceMatcher(None, _norm_text(a), _norm_text(b)).ratio() >= 0.85
-    return _norm_text(a) == _norm_text(b)
+        return difflib.SequenceMatcher(None, _norm(a), _norm(b)).ratio() >= 0.85
+    return _norm(a) == _norm(b)
 
 
-def run(rules_fields: dict, ai_result: dict) -> dict:
-    ai_ok = ai_result.get("status") == "ok"
-    ai_fields = ai_result.get("fields", {}) if ai_ok else {}
+def base_confidence(read_path: str) -> str:
+    return "high" if read_path == "text_layer" else "medium"
+
+
+def from_rules(rules_fields: dict, read_path: str, keys) -> dict:
+    conf = base_confidence(read_path)
+    return {k: {"value": rules_fields[k]["value"], "source": "rules", "confidence": conf, "evidence": rules_fields[k].get("evidence")}
+            for k in keys if k in rules_fields}
+
+
+def fill_gaps(merged: dict, ai_fields: dict, keys) -> list:
+    """Add AI values for keys not already present. Returns the list of keys filled."""
+    filled = []
+    for k in keys:
+        if k not in merged and k in ai_fields:
+            merged[k] = {"value": ai_fields[k]["value"], "source": "ai", "confidence": "medium", "evidence": ai_fields[k].get("evidence")}
+            filled.append(k)
+    return filled
+
+
+def reconcile(rules_fields: dict, ai_fields: dict, keys) -> tuple:
+    """Full-read merge for poor scans. Returns (merged_subset, conflicts)."""
     merged, conflicts = {}, []
-    counts = {"both": 0, "rules": 0, "ai": 0, "conflict": 0}
-
-    for key in config.FIELDS:
-        r, a = rules_fields.get(key), ai_fields.get(key)
+    for k in keys:
+        r, a = rules_fields.get(k), ai_fields.get(k)
         if r and a:
-            if _agree(key, r["value"], a["value"]):
-                value = a["value"] if key == "vendor_name" else r["value"]  # AI casing for names, rules otherwise (identical anyway)
-                merged[key] = {"value": value, "source": "both", "confidence": "high", "evidence": r.get("evidence") or a.get("evidence")}
-                counts["both"] += 1
+            if _agree(k, r["value"], a["value"]):
+                value = a["value"] if k == "vendor_name" else r["value"]
+                merged[k] = {"value": value, "source": "both", "confidence": "high", "evidence": r.get("evidence") or a.get("evidence")}
             else:
-                prefer_ai = key in TEXT_FIELDS
-                chosen, other = (a, r) if prefer_ai else (r, a)
-                merged[key] = {"value": chosen["value"], "source": "ai" if prefer_ai else "rules", "confidence": "low",
-                               "evidence": chosen.get("evidence"), "conflict": {"rules": r["value"], "ai": a["value"]}}
-                conflicts.append({"field": key, "rules": r["value"], "ai": a["value"], "kept": "ai" if prefer_ai else "rules"})
-                counts["conflict"] += 1
-        elif r:
-            merged[key] = {"value": r["value"], "source": "rules", "confidence": "medium", "evidence": r.get("evidence")}
-            counts["rules"] += 1
+                merged[k] = {"value": a["value"], "source": "ai", "confidence": "low", "evidence": a.get("evidence"),
+                             "conflict": {"rules": r["value"], "ai": a["value"]}}
+                conflicts.append({"field": k, "rules": r["value"], "ai": a["value"], "kept": "ai"})
         elif a:
-            merged[key] = {"value": a["value"], "source": "ai", "confidence": "medium", "evidence": a.get("evidence")}
-            counts["ai"] += 1
+            merged[k] = {"value": a["value"], "source": "ai", "confidence": "medium", "evidence": a.get("evidence")}
+        elif r:
+            merged[k] = {"value": r["value"], "source": "rules", "confidence": "medium", "evidence": r.get("evidence")}
+    return merged, conflicts
 
-    found = [k for k in config.FIELDS if k in merged]
-    missing = [k for k in config.FIELDS if k not in merged and k not in ('cgst', 'sgst', 'igst')]
-    if not any(k in merged for k in ('cgst', 'sgst', 'igst')):
-        missing.append('gst lines')
-    ai_only = [k for k, v in merged.items() if v["source"] == "ai" and v["confidence"] == "medium"]
 
-    if ai_ok:
-        summary = (f"Rules found {len(rules_fields)}, AI found {len(ai_fields)}; {counts['both']} agree"
-                   + (f", {counts['conflict']} conflict" if counts["conflict"] else "")
-                   + (f"; filled by AI alone: {', '.join(ai_only)}" if ai_only else ""))
-    else:
-        summary = f"Rules found {len(rules_fields)} of {len(config.FIELDS)}; AI unavailable, so rules stand alone"
-    if missing:
-        summary += f"; still missing {', '.join(missing)}"
-
-    return {
-        "fields": merged,
-        "line_items": ai_result.get("line_items", []) if ai_ok else [],
-        "conflicts": conflicts,
-        "counts": counts,
-        "found": found,
-        "missing": missing,
-        "ai_status": ai_result.get("status"),
-        "summary": summary,
-    }
+def missing_of(merged: dict, keys) -> list:
+    """Keys absent from merged, treating the three GST lines as one optional group."""
+    missing = [k for k in keys if k not in merged and k not in ("cgst", "sgst", "igst")]
+    if any(k in keys for k in ("cgst", "sgst", "igst")) and not any(k in merged for k in ("cgst", "sgst", "igst")):
+        missing.append("gst lines")
+    return missing

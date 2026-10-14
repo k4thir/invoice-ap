@@ -35,8 +35,13 @@ def ocr(data: bytes, dpi: int = 300):
 
     images = convert_from_bytes(data, dpi=dpi)
     texts, confs = [], []
+    first_png = None
     for img in images:
         gray = img.convert("L")
+        if first_png is None:
+            buf = io.BytesIO()
+            img.convert("RGB").resize((img.width // 2, img.height // 2)).save(buf, "PNG", optimize=True)
+            first_png = buf.getvalue()
         texts.append(pytesseract.image_to_string(gray))
         try:
             d = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT)
@@ -44,7 +49,7 @@ def ocr(data: bytes, dpi: int = 300):
         except Exception:
             pass
     mean_conf = round(sum(confs) / len(confs), 1) if confs else None
-    return "\n\f\n".join(texts), len(images), mean_conf
+    return "\n\f\n".join(texts), len(images), mean_conf, first_png
 
 
 def clean(text: str) -> str:
@@ -63,6 +68,7 @@ def run(data: bytes, filename: str) -> dict:
         "pages": 0,
         "ocr_confidence": None,
         "text": "",
+        "page_image_png": None,
         "summary": "",
     }
     text, pages = read_text_layer(data)
@@ -71,8 +77,8 @@ def run(data: bytes, filename: str) -> dict:
         result["summary"] = f"Text layer found: {len(result['text']):,} characters across {pages} page(s)"
         return result
 
-    text, pages, conf = ocr(data)
-    result.update(path="ocr", pages=pages, text=clean(text), ocr_confidence=conf)
+    text, pages, conf, png = ocr(data)
+    result.update(path="ocr", pages=pages, text=clean(text), ocr_confidence=conf, page_image_png=png)
     conf_txt = f", OCR confidence {conf}%" if conf is not None else ""
     result["summary"] = f"No text layer; OCR produced {len(result['text']):,} characters from {pages} page(s){conf_txt}"
     return result

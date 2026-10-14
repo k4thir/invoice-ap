@@ -1,15 +1,11 @@
 """
 Stage 7 - Record, and the memory the other stages read.
 
-Two kinds of history:
+History:
   live runs   data/runs.jsonl, appended on every run. On a free host the disk
               resets on reboot, so if HF_TOKEN and HF_DATASET_REPO are set we
               mirror the file to a private Hugging Face Dataset after each run
               and pull it back on startup.
-  seed runs   data/seed_runs.json, bundled with the app so the dashboard shows
-              a populated history from the first visit. Seeds are display-only:
-              they never count toward duplicates or the PO ledger, so a live
-              demo starts from a clean ledger even though the dashboard is full.
 
 What later stages ask of history:
   po_ledger()       {po_number: amount approved by this system}  (approvals only)
@@ -103,22 +99,9 @@ def load_live() -> list:
     return out
 
 
-def load_seeds() -> list:
-    p = config.SEED_RUNS_FILE
-    if not p.exists():
-        return []
-    try:
-        seeds = json.loads(p.read_text(encoding="utf-8"))
-        for s in seeds:
-            s["seed"] = True
-        return seeds
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
 def load_all() -> list:
-    """Seeds first (oldest), then live runs, oldest to newest."""
-    return load_seeds() + load_live()
+    """All recorded runs, oldest to newest."""
+    return load_live()
 
 
 def clear_live() -> None:

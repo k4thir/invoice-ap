@@ -2,60 +2,86 @@
 The pipeline. One invoice in, one run record out.
 
 run() is a generator so the UI can show each stage as it finishes:
-    for event in pipeline.run(pdf_bytes, filename):
-        if event["type"] == "stage": ... update the stage log ...
+    for event in pipeline.run(pdf_bytes, filename, reference=...):
+        if event["type"] == "stage": ... update the stage rail ...
         elif event["type"] == "done": record = event["record"]
 
-Stages:
-  1 ingest        text layer, or OCR when there is none
-  2 extract       rules + AI in parallel, then merge            <- the only stage that uses a model
-  3 validate      arithmetic, GST structure, GSTIN format, dates, required fields
-  4 match_vendor  approved-vendor register (GSTIN, then fuzzy name + aliases)
-  5 match_po      PO register + what this system already approved
-  6 decide        ordered rules -> Approve / Hold / Reject + next action
-  7 record        append to history (and mirror it, if configured)
+Extraction policy (rules first, AI only for gaps):
+
+  1 read       text layer, or OCR. OCR confidence decides the path below.
+  2 identify   vendor name / GSTIN, invoice number, date, PO reference.
+               Rules first. AI call only for the identity fields the rules missed.
+               POOR SCAN (OCR confidence < 90%): the OCR text itself is suspect,
+               so the AI reads the whole document once, now; rules cross-check it.
+               Very poor scan (< 70%) with a Gemini key: the page image goes to
+               a vision model instead of the OCR text.
+  3 vendor     match against the vendor register (GSTIN, then fuzzy name + aliases)
+  4 po         match against the PO register (stated, else inferred)
+  5 amounts    subtotal, GST lines, total (and line items).
+               Rules first. AI call only if rules left a gap AND at least one of
+               vendor / PO matched the reference data. If neither matched, the
+               rules' amounts are shown but no AI is spent: the invoice is
+               heading for Reject/Hold on identity grounds regardless.
+  6 check      arithmetic, GST structure, GSTIN format, dates, required fields
+  7 decide     ordered rules -> Approve / Hold / Reject + next action
+  8 record     history (+ mirror, if configured)
+
+Maximum AI calls per invoice: 2 (identity gaps, amount gaps), or 1 (poor scan full read).
+A clean text PDF the rules fully understand makes 0 calls.
 """
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from . import config, ingest, extract_rules, extract_ai, merge, validate, match, decide, store
 
 STAGES = [
-    ("ingest", "Read the PDF"),
-    ("extract", "Extract fields"),
-    ("validate", "Check the numbers"),
-    ("match_vendor", "Match vendor"),
-    ("match_po", "Match purchase order"),
+    ("read", "Read"),
+    ("identify", "Identify"),
+    ("vendor", "Match vendor"),
+    ("po", "Match PO"),
+    ("amounts", "Amounts"),
+    ("check", "Check"),
     ("decide", "Decide"),
-    ("record", "Record the run"),
+    ("record", "Record"),
 ]
 
 
-def run(data: bytes, filename: str, use_ai: bool = True):
+def _ai_summary(res, filled):
+    if res["status"] == "ok":
+        got = ", ".join(filled) if filled else "nothing new"
+        return f"AI ({res['provider']}, {res['ms']} ms) filled {got}"
+    return f"AI unavailable ({res.get('error')})"
+
+
+def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None):
+    reference = reference or {}
+    vendors_df, pos_df = reference.get("vendors"), reference.get("pos")
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     started = time.time()
-    record = {
-        "run_id": run_id,
-        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "filename": filename,
-        "stages": [],
-        "decision": None,
-    }
+    record = {"run_id": run_id, "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              "filename": filename, "stages": [], "ai_calls": [], "policy": [], "decision": None}
+    merged, conflicts, line_items = {}, [], []
 
     def emit(name, status, summary, t0, detail=None):
-        ev = {"type": "stage", "name": name, "status": status, "summary": summary,
-              "ms": int((time.time() - t0) * 1000), "detail": detail or {}}
+        ev = {"type": "stage", "name": name, "status": status, "summary": summary, "ms": int((time.time() - t0) * 1000), "detail": detail or {}}
         record["stages"].append({k: ev[k] for k in ("name", "status", "summary", "ms")})
         return ev
 
-    # ---- 1 ingest
+    def note(msg):
+        record["policy"].append(msg)
+
+    def ai(fields, want_items, purpose, image=None):
+        res = extract_ai.run(ing["text"], fields=fields, want_line_items=want_items, image_png=image, purpose=purpose)
+        record["ai_calls"].append({k: res[k] for k in ("purpose", "mode", "status", "provider", "model", "ms", "requested", "error")} | {"returned": sorted(res["fields"].keys())})
+        return res
+
+    # ---- 1 read
     t0 = time.time()
     try:
         ing = ingest.run(data, filename)
-    except Exception as e:  # noqa: BLE001 - unreadable or non-PDF upload
-        yield emit("ingest", "failed", f"Could not read the file: {type(e).__name__}: {e}", t0)
+    except Exception as e:  # noqa: BLE001
+        yield emit("read", "failed", f"Could not read the file: {type(e).__name__}: {e}", t0)
         record["decision"] = {"status": "Hold", "primary_code": "UNREADABLE_FILE", "codes": ["UNREADABLE_FILE"],
                               "next_action": "Open the file manually; it may be corrupt, password-protected or not a PDF.", "explanation": []}
         record["elapsed_ms"] = int((time.time() - started) * 1000)
@@ -64,74 +90,124 @@ def run(data: bytes, filename: str, use_ai: bool = True):
         return
     record["ingest"] = {k: ing[k] for k in ("file_hash", "size_bytes", "path", "pages", "ocr_confidence")}
     record["text"] = ing["text"]
-    yield emit("ingest", "ok" if ing["path"] == "text_layer" else "warn", ing["summary"], t0,
-               {"path": ing["path"], "pages": ing["pages"]})
-
-    # ---- 2 extract: rules and AI run side by side, then merge
-    t0 = time.time()
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_rules = pool.submit(extract_rules.run, ing["text"])
-        f_ai = pool.submit(extract_ai.run, ing["text"]) if use_ai else None
-        rules = f_rules.result()
-        ai = f_ai.result() if f_ai else {"status": "unavailable", "error": "AI disabled for this run", "fields": {}, "line_items": [], "provider": None, "model": None, "ms": 0, "attempts": []}
-    merged = merge.run(rules["fields"], ai)
-    record["extract"] = {
-        "rules": rules["fields"],
-        "ai": ai["fields"],
-        "ai_status": ai["status"],
-        "ai_provider": ai.get("provider"),
-        "ai_model": ai.get("model"),
-        "ai_ms": ai.get("ms"),
-        "ai_error": ai.get("error"),
-        "ai_attempts": ai.get("attempts", []),
-        "merged": merged["fields"],
-        "line_items": merged["line_items"],
-        "conflicts": merged["conflicts"],
-    }
-    if ai["status"] == "ok":
-        status = "ok" if not merged["missing"] and not merged["conflicts"] else "warn"
-        summary = merged["summary"] + f" · {ai.get('provider')} / {ai.get('model')} in {ai.get('ms')} ms"
+    conf = ing["ocr_confidence"]
+    poor_scan = ing["path"] == "ocr" and conf is not None and conf < config.OCR_AI_THRESHOLD
+    very_poor = poor_scan and conf < config.OCR_VISION_THRESHOLD
+    if ing["path"] == "text_layer":
+        note("Text layer present: rules read it first; AI only for gaps.")
+    elif poor_scan:
+        note(f"Scan at {conf}% OCR confidence, below {config.OCR_AI_THRESHOLD:g}%: AI reads the whole document; rules cross-check.")
     else:
-        status = "warn"
-        summary = merged["summary"] + f" · AI_UNAVAILABLE ({ai.get('error')})"
-    yield emit("extract", status, summary, t0, {"found": merged["found"], "missing": merged["missing"]})
+        note(f"Scan at {conf}% OCR confidence, at or above {config.OCR_AI_THRESHOLD:g}%: OCR text treated like a text layer; AI only for gaps.")
+    yield emit("read", "ok" if ing["path"] == "text_layer" else "warn", ing["summary"], t0, {"path": ing["path"], "pages": ing["pages"]})
 
-    # ---- 3 validate
-    t0 = time.time()
-    val = validate.run(merged["fields"], line_items=merged["line_items"])
-    record["validate"] = val
-    yield emit("validate", "ok" if not val["failed_codes"] else "warn", val["summary"], t0, {"failed": val["failed_codes"]})
+    rules = extract_rules.run(ing["text"])["fields"]
+    record["extract"] = {"rules": rules, "ai": {}}
 
-    # ---- 4 vendor
+    # ---- 2 identify
     t0 = time.time()
-    vendor = match.match_vendor(merged["fields"])
+    if poor_scan and use_ai:
+        image = ing.get("page_image_png") if (very_poor and extract_ai.vision_available()) else None
+        if very_poor and not image:
+            note(f"Below {config.OCR_VISION_THRESHOLD:g}%: a vision model would read the page image, but no Gemini key is set; using OCR text.")
+        res = ai(config.FIELDS, True, "full read of a poor scan", image)
+        if res["status"] == "ok":
+            record["extract"]["ai"].update(res["fields"])
+            m, c = merge.reconcile(rules, res["fields"], config.FIELDS)
+            merged.update(m)
+            conflicts.extend(c)
+            line_items = res["line_items"]
+            summary = f"AI read the document ({'image' if image else 'OCR text'}, {res['provider']}, {res['ms']} ms); rules agree on {sum(1 for v in m.values() if v['source'] == 'both')}" + (f", {len(c)} conflict(s)" if c else "")
+        else:
+            merged.update(merge.from_rules(rules, ing["path"], config.FIELDS))
+            summary = f"Rules only: {_ai_summary(res, [])}"
+            note("AI unavailable for the full read; rules stand alone and every gap becomes a Hold.")
+    else:
+        merged.update(merge.from_rules(rules, ing["path"], config.IDENTITY_FIELDS))
+        gaps = [k for k in config.IDENTITY_FIELDS if k not in merged]
+        # a missing GSTIN alone is not worth a call; a missing vendor, PO, invoice number or date is
+        need_ai = any(k in gaps for k in ("vendor_name", "po_reference", "invoice_number", "invoice_date"))
+        if gaps and need_ai and use_ai:
+            res = ai(gaps, False, "identity gaps")
+            record["extract"]["ai"].update(res["fields"])
+            filled = merge.fill_gaps(merged, res["fields"], gaps)
+            note(f"Rules missed {', '.join(gaps)} → AI asked for exactly those; " + (f"it returned {', '.join(filled) or 'none'}." if res['status'] == 'ok' else "AI unavailable, so they stay missing."))
+            summary = f"Rules found {len(config.IDENTITY_FIELDS) - len(gaps)} of {len(config.IDENTITY_FIELDS)}; {_ai_summary(res, filled)}"
+        elif gaps and not use_ai:
+            note(f"Rules missed {', '.join(gaps)}; AI is off, so they stay missing.")
+            summary = f"Rules found {len(config.IDENTITY_FIELDS) - len(gaps)} of {len(config.IDENTITY_FIELDS)}; AI off"
+        else:
+            note("Rules found every identity field → no AI call.")
+            summary = f"Rules found all {len(config.IDENTITY_FIELDS)} identity fields; no AI needed"
+    still = [k for k in ("vendor_name", "invoice_number", "invoice_date", "po_reference") if k not in merged]
+    yield emit("identify", "ok" if not still else "warn", summary + (f"; still missing {', '.join(still)}" if still else ""), t0)
+
+    # ---- 3 vendor
+    t0 = time.time()
+    vendor = match.match_vendor(merged, vendors_df)
     record["vendor"] = vendor
-    yield emit("match_vendor", "ok" if vendor["approved"] else "warn", vendor["summary"], t0)
+    yield emit("vendor", "ok" if vendor["approved"] else "warn", vendor["summary"], t0)
 
-    # ---- 5 purchase order
+    # ---- 4 po (needs the total for cumulative maths; use the rules' total if we have it, refine after amounts)
     t0 = time.time()
-    po = match.match_po(merged["fields"], vendor, store.po_ledger())
+    if not poor_scan:
+        merged.update(merge.from_rules(rules, ing["path"], config.MONEY_FIELDS))
+    po = match.match_po(merged, vendor, store.po_ledger(), pos_df)
+    po_identified = po["found"] and (po.get("method") == "explicit")
+    yield emit("po", "ok" if po_identified and po.get("vendor_matches") is not False and po.get("po_status") == "open" else "warn", po["summary"], t0)
+
+    # ---- 5 amounts
+    t0 = time.time()
+    money_gaps = merge.missing_of(merged, config.MONEY_FIELDS)
+    eligible = vendor["approved"] or po["found"]
+    if poor_scan:
+        summary = "Amounts came from the full read above" + (f"; still missing {', '.join(money_gaps)}" if money_gaps else "")
+    elif money_gaps and eligible and use_ai:
+        res = ai(config.MONEY_FIELDS, True, "amount gaps")
+        record["extract"]["ai"].update(res["fields"])
+        filled = merge.fill_gaps(merged, res["fields"], config.MONEY_FIELDS)
+        line_items = res["line_items"]
+        why = f"vendor matched ({vendor['vendor_id']})" if vendor["approved"] else f"PO matched ({po['po_number']})"
+        note(f"Rules missed {', '.join(money_gaps)}; {why}, so the amounts are worth an AI call → " + (f"it returned {', '.join(filled) or 'none'} plus {len(line_items)} line item(s)." if res['status'] == 'ok' else "AI unavailable, so they stay missing."))
+        summary = f"Rules found {sum(1 for k in config.MONEY_FIELDS if k in merged and merged[k]['source'] == 'rules')} of {len(config.MONEY_FIELDS)}; {_ai_summary(res, filled)}"
+    elif money_gaps and not eligible:
+        note(f"Rules missed {', '.join(money_gaps)}, but neither vendor nor PO matched the reference data → no AI spent on amounts; decision will rest on identity.")
+        summary = f"Rules missed {', '.join(money_gaps)}; AI skipped because nothing matched the reference data"
+    elif money_gaps:
+        note(f"Rules missed {', '.join(money_gaps)}; AI is off.")
+        summary = f"Rules missed {', '.join(money_gaps)}; AI off"
+    else:
+        note("Rules found every amount → no AI call.")
+        summary = "Rules found all amounts; no AI needed"
+    # the PO was identified before the amounts tier; recompute its arithmetic now that the total is known
+    if merged.get("total"):
+        po = match.match_po(merged, vendor, store.po_ledger(), pos_df)
     record["po"] = po
-    po_ok = po["found"] and po.get("method") == "explicit" and po.get("vendor_matches") is not False and po.get("po_status") == "open"
-    yield emit("match_po", "ok" if po_ok else "warn", po["summary"], t0)
+    record["extract"].update({"merged": merged, "line_items": line_items, "conflicts": conflicts,
+                              "ai_status": "ok" if any(c["status"] == "ok" for c in record["ai_calls"]) else ("none" if not record["ai_calls"] else "unavailable")})
+    yield emit("amounts", "ok" if not merge.missing_of(merged, config.MONEY_FIELDS) else "warn", summary, t0)
 
-    # ---- 6 decide
+    # ---- 6 check
     t0 = time.time()
-    dup = store.find_duplicate(vendor.get("vendor_id"),
-                               (merged["fields"].get("vendor_name") or {}).get("value"),
-                               (merged["fields"].get("invoice_number") or {}).get("value"),
-                               ing["file_hash"])
-    record["duplicate"] = dup
-    decision = decide.run(merged["fields"], val, vendor, po, dup)
-    record["decision"] = decision
-    icon = {"Approve": "ok", "Hold": "warn", "Reject": "failed"}[decision["status"]]
-    yield emit("decide", icon, f"{decision['status']} · {decision['primary_code']}", t0)
+    val = validate.run(merged, line_items=line_items)
+    record["validate"] = val
+    yield emit("check", "ok" if not val["failed_codes"] else "warn", val["summary"], t0)
 
-    # ---- 7 record
+    # ---- 7 decide
+    t0 = time.time()
+    dup = store.find_duplicate(vendor.get("vendor_id"), (merged.get("vendor_name") or {}).get("value"),
+                               (merged.get("invoice_number") or {}).get("value"), ing["file_hash"])
+    record["duplicate"] = dup
+    decision = decide.run(merged, val, vendor, po, dup)
+    record["decision"] = decision
+    yield emit("decide", {"Approve": "ok", "Hold": "warn", "Reject": "failed"}[decision["status"]], f"{decision['status']}: {decision['primary_code']}", t0)
+
+    # ---- 8 record
     t0 = time.time()
     record["elapsed_ms"] = int((time.time() - started) * 1000)
+    record["ai_call_count"] = len(record["ai_calls"])
     store.save(record)
     sync = store.sync_status()
-    where = "history + mirrored" if sync["configured"] and not sync.get("error") else "local history"
-    yield emit("record", "ok", f"Run {run_id} saved to {where} ({record['elapsed_ms']} ms total)", t0)
+    where = "history and mirror" if sync["configured"] and not sync.get("error") else "history"
+    yield emit("record", "ok", f"Saved to {where}; {record['ai_call_count']} AI call(s); {record['elapsed_ms']} ms end to end", t0)
     yield {"type": "done", "record": record}

@@ -73,10 +73,6 @@ The sidebar shows "AI extractor: groq · openai/gpt-oss-120b" when the key is pi
     8  inv02  Approve  WITHIN_TOLERANCE   +1.50% vs 2%
 Then flip the sidebar toggle "Use AI extractor" off and run inv08 again: Hold, MISSING_FIELD, with "AI unavailable" in the log.
 
-## Seed runs (do once, locally, with your key working)
-    python tools/make_seed_runs.py
-This writes data/seed_runs.json. Commit/upload it with the project so the dashboard is populated on first visit.
-
 ## Streamlit Community Cloud secrets (Manage app → Settings → Secrets)
     AI_PROVIDER = "groq"
     GROQ_API_KEY = "gsk_..."
@@ -84,3 +80,13 @@ This writes data/seed_runs.json. Commit/upload it with the project so the dashbo
     HF_TOKEN = "hf_..."                       # optional
     HF_DATASET_REPO = "your-username/invoice-ap-runs"   # optional
 Reboot the app after changing secrets.
+
+
+# Day 3 (redesign + tiered AI)
+
+- New files: ui.py, pipeline/reference.py, .streamlit/config.toml. Replace the whole folder again, keep .env.
+- The sample picker is gone: upload PDFs (several at once is fine). Reviewers can download the 8 samples from the sidebar.
+- Seed runs are gone. To keep history across cloud restarts, set HF_TOKEN and HF_DATASET_REPO in secrets (optional).
+- IMPORTANT: upload the hidden folder .streamlit (it holds config.toml, the theme). On a Mac press Cmd+Shift+. in Finder to show hidden files.
+- Reference data page: upload a CSV in the template format (download the template there), or add one row by hand. Session-only by design.
+- If you later add GEMINI_API_KEY, scans under 70% OCR confidence are read from the page image.
