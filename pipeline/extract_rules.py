@@ -148,7 +148,9 @@ def run(text: str) -> dict:
         fields["total"] = tot
 
     found = [k for k in config.FIELDS if k in fields]
-    missing = [k for k in config.FIELDS if k not in fields]
+    missing = [k for k in config.FIELDS if k not in fields and k not in ('cgst', 'sgst', 'igst')]
+    if not any(k in fields for k in ('cgst', 'sgst', 'igst')):
+        missing.append('gst lines')
     return {
         "fields": fields,
         "found": found,

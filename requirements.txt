@@ -8,3 +8,4 @@ numpy>=1.26
 pandas>=2.0
 python-dotenv>=1.0
 groq>=0.9
+huggingface_hub>=0.24

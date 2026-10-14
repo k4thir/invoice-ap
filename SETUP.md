@@ -47,3 +47,40 @@ Open the URL it prints (usually http://localhost:8501). Pick a sample, press Run
   2. Upload everything in this folder except .env and .venv (the Space reads requirements.txt and packages.txt).
   3. Wait for the build log to finish; open the public URL; run a sample.
   Doing this on day 1 surfaces install problems while there is time to fix them.
+
+# Day 2
+
+## Keys
+Edit `.env`:
+    AI_PROVIDER=groq
+    GROQ_API_KEY=gsk_...
+    GROQ_MODEL=openai/gpt-oss-120b
+Optional: a Gemini key as fallback; an HF write token + dataset repo name to mirror history.
+
+## Install the new dependency and run
+    pip install -r requirements.txt
+    streamlit run app.py
+The sidebar shows "AI extractor: groq · openai/gpt-oss-120b" when the key is picked up.
+
+## Demo order (start with a clean history: Dashboard → Reset → Clear live history)
+    1  inv01  Approve  EXACT_MATCH
+    2  inv08  Approve  EXACT_MATCH        rules found 3 fields, AI found 8
+    3  inv04  Hold     MISSING_FIELD      scanned, OCR path, no invoice number (+ GSTIN_INVALID from an OCR misread)
+    4  inv05  Approve  PARTIAL_DELIVERY   449,860 of 500,000 on PO-1042
+    5  inv06  Hold     CUMULATIVE_EXCEEDS_PO   570,220 vs 500,000
+    6  inv07  Reject   DUPLICATE_INVOICE  same number as run 1
+    7  inv03  Hold     OUTSIDE_TOLERANCE  +3.00% vs 2%
+    8  inv02  Approve  WITHIN_TOLERANCE   +1.50% vs 2%
+Then flip the sidebar toggle "Use AI extractor" off and run inv08 again: Hold, MISSING_FIELD, with "AI unavailable" in the log.
+
+## Seed runs (do once, locally, with your key working)
+    python tools/make_seed_runs.py
+This writes data/seed_runs.json. Commit/upload it with the project so the dashboard is populated on first visit.
+
+## Streamlit Community Cloud secrets (Manage app → Settings → Secrets)
+    AI_PROVIDER = "groq"
+    GROQ_API_KEY = "gsk_..."
+    GROQ_MODEL = "openai/gpt-oss-120b"
+    HF_TOKEN = "hf_..."                       # optional
+    HF_DATASET_REPO = "your-username/invoice-ap-runs"   # optional
+Reboot the app after changing secrets.

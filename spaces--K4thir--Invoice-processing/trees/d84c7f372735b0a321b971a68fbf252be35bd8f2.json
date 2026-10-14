@@ -1,0 +1,21 @@
+{
+ "format_version": 1,
+ "files": {
+  ".gitattributes": {
+   "size": 1519,
+   "blob_id": "a6344aac8c09253b3b630fb776ae94478aa0275b"
+  },
+  "README.md": {
+   "size": 202,
+   "blob_id": "0f100e1d8d8a863e9475ab7b7b5cd40e10a72aca"
+  },
+  "index.html": {
+   "size": 546,
+   "blob_id": "b0c4b3666032a737f3903db53e6a8a9272483e28"
+  },
+  "style.css": {
+   "size": 388,
+   "blob_id": "114adf441e9032febb46bc056b2a8bb651075f0d"
+  }
+ }
+}
