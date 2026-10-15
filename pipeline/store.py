@@ -126,6 +126,8 @@ def po_ledger() -> dict:
     ledger = {}
     for r in load_live():
         d = r.get("decision") or {}
+        if r.get("superseded_by"):
+            continue
         po = (r.get("po") or {}).get("po_number")
         total = (((r.get("extract") or {}).get("merged") or {}).get("total") or {}).get("value")
         if d.get("status") == "Approve" and po and isinstance(total, (int, float)):
@@ -133,20 +135,51 @@ def po_ledger() -> dict:
     return ledger
 
 
-def find_duplicate(vendor_id, vendor_name, invoice_number, file_hash) -> dict:
-    """Same file, or same vendor + invoice number, already processed in live history (any outcome)."""
+def find_prior(vendor_id, vendor_name, invoice_number, file_hash) -> dict:
+    """
+    The most recent earlier run for the same invoice (same file, or same vendor + invoice number).
+    Returns {"found": bool, "status", "run_id", "when", "filename", "by", "superseded"}.
+    Decision semantics live in the pipeline: an APPROVED prior is a duplicate (never pay twice);
+    a HELD or REJECTED prior is superseded by the new evaluation.
+    """
+    best = None
     for r in load_live():
-        ing = r.get("ingest") or {}
-        if file_hash and ing.get("file_hash") == file_hash:
-            return {"is_duplicate": True, "by": "file_hash", "run_id": r["run_id"], "when": r.get("started_at"), "filename": r.get("filename")}
-        m = (r.get("extract") or {}).get("merged") or {}
-        prev_inv = (m.get("invoice_number") or {}).get("value")
-        if not invoice_number or not prev_inv or _norm(prev_inv) != _norm(invoice_number):
+        if r.get("superseded_by"):
             continue
-        prev_vendor_id = (r.get("vendor") or {}).get("vendor_id")
-        prev_vendor_name = (m.get("vendor_name") or {}).get("value")
-        same_vendor = (vendor_id and prev_vendor_id == vendor_id) or (
-            not vendor_id and _norm(prev_vendor_name)[:12] == _norm(vendor_name)[:12])
-        if same_vendor:
-            return {"is_duplicate": True, "by": "vendor+invoice_number", "run_id": r["run_id"], "when": r.get("started_at"), "filename": r.get("filename")}
-    return {"is_duplicate": False}
+        ing = r.get("ingest") or {}
+        by = None
+        if file_hash and ing.get("file_hash") == file_hash:
+            by = "file_hash"
+        else:
+            m = (r.get("extract") or {}).get("merged") or {}
+            prev_inv = (m.get("invoice_number") or {}).get("value")
+            if invoice_number and prev_inv and _norm(prev_inv) == _norm(invoice_number):
+                prev_vendor_id = (r.get("vendor") or {}).get("vendor_id")
+                prev_vendor_name = (m.get("vendor_name") or {}).get("value")
+                same_vendor = (vendor_id and prev_vendor_id == vendor_id) or (
+                    not vendor_id and _norm(prev_vendor_name)[:12] == _norm(vendor_name)[:12])
+                if same_vendor:
+                    by = "vendor+invoice_number"
+        if by:
+            best = {"found": True, "status": (r.get("decision") or {}).get("status"), "run_id": r["run_id"],
+                    "when": r.get("started_at"), "filename": r.get("filename"), "by": by}
+    return best or {"found": False}
+
+
+def mark_superseded(old_run_id: str, new_run_id: str) -> None:
+    """Rewrite history so the earlier run points at the one that replaced it."""
+    p = _runs_path()
+    if not p.exists():
+        return
+    rows = load_live()
+    changed = False
+    for r in rows:
+        if r.get("run_id") == old_run_id and not r.get("superseded_by"):
+            r["superseded_by"] = new_run_id
+            changed = True
+    if changed:
+        with _lock:
+            with p.open("w", encoding="utf-8") as f:
+                for r in rows:
+                    f.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
+        push_to_hf()

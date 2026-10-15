@@ -41,9 +41,8 @@ Rules first, AI only for gaps. In order:
 2. **Identify** (vendor name, GSTIN, invoice number, date, PO reference). Rules first. If vendor name, PO reference, invoice number or date is missing, one AI call asks for exactly those fields. A missing GSTIN alone does not trigger a call.
 3. **Match vendor and PO** against the reference data, before any money is read.
 4. **Amounts** (subtotal, GST lines, total, line items). Rules first. If a gap remains **and** at least one of vendor or PO matched, one AI call asks for the amounts. If neither matched, no AI is spent: the rules' amounts are shown and the decision will be Reject or Hold on identity grounds anyway.
-5. **Poor scan** (OCR confidence below 90%): the OCR text itself is suspect, so the AI reads the whole document once at the identify stage and the rules cross-check it. Disagreements keep the AI value, drop confidence to low, and a low-confidence required field becomes a Hold.
-6. **Very poor scan** (below 70%) with a Gemini key: the page image goes to a vision model instead of the OCR text.
-7. **AI unavailable** at any point: the stage continues on rules alone and says so. Gaps become Holds with a specific next action.
+5. **Poor scan** (OCR confidence below 90%): the OCR text itself is suspect, so the AI reads the whole document once at the identify stage. With a Gemini key the page image goes to Gemini Flash vision; otherwise, or if that call fails, the OCR text goes to the text model. Rules from the OCR text cross-check the result: disagreements keep the AI value, drop confidence to low, and a low-confidence required field becomes a Hold.
+6. **AI unavailable** at any point: the stage continues on rules alone and says so. Gaps become Holds with a specific next action.
 
 Most clean invoices make zero AI calls; the worst case is two. Every call is listed on the run with what it asked for and what came back.
 
@@ -55,7 +54,7 @@ Vendors format invoices however they like. Pattern rules work on layouts you've 
 
 | # | Condition | Outcome | Code |
 |---|---|---|---|
-| 1 | Same vendor + invoice number already processed, or same file | Reject | `DUPLICATE_INVOICE` |
+| 1 | Same vendor + invoice number (or same file) was already **approved** | Reject | `DUPLICATE_INVOICE` |
 | 2 | Vendor not in the approved register (or inactive) | Reject | `VENDOR_NOT_APPROVED` |
 | 3 | A required field is missing (vendor, invoice number, date, total) | Hold | `MISSING_FIELD` |
 | 4 | Arithmetic, GST structure or date check failed | Hold | `ARITHMETIC_MISMATCH` / `GST_INCONSISTENT` / `DATE_IMPLAUSIBLE` |
@@ -63,17 +62,17 @@ Vendors format invoices however they like. Pattern rules work on layouts you've 
 | 6 | No PO stated and none inferable | Hold | `PO_NOT_FOUND` |
 | 7 | Stated PO belongs to another vendor | Hold | `PO_VENDOR_MISMATCH` |
 | 8 | Stated PO is closed | Hold | `PO_CLOSED` |
-| 9 | PO was inferred, not stated | Hold | `PO_INFERRED` |
+| 9 | PO not stated and inferred only approximately (an exact single match approves, annotated `PO_MATCHED_BY_AMOUNT`) | Hold | `PO_INFERRED` |
 | 10 | Cumulative invoicing exceeds PO beyond tolerance, earlier invoices exist | Hold | `CUMULATIVE_EXCEEDS_PO` |
 | 11 | First invoice on the PO exceeds it beyond tolerance | Hold | `OUTSIDE_TOLERANCE` |
 | 12 | Extractors disagreed on a required field | Hold | `LOW_CONFIDENCE` |
-| — | Otherwise | Approve | `EXACT_MATCH` / `WITHIN_TOLERANCE` / `PARTIAL_DELIVERY` |
+| — | Otherwise | Approve | `EXACT_MATCH` / `WITHIN_TOLERANCE` / `PARTIAL_DELIVERY` (+ `SPLIT_FINAL`, `PO_MATCHED_BY_AMOUNT`, `RESUBMISSION` annotations) |
 
 Tolerance is a per-vendor attribute in `vendors.csv` (default 2%).
 
 ## The test set
 
-Eight generated invoices in four different layouts; one is an image-only scan.
+Fourteen generated invoices in four different layouts; one is an image-only scan.
 
 | Invoice | Scenario | Expected |
 |---|---|---|
@@ -84,9 +83,14 @@ Eight generated invoices in four different layouts; one is an image-only scan.
 | inv05 | First of two against a PO already 60% consumed | Approve · `PARTIAL_DELIVERY` |
 | inv06 | Second against the same PO; cumulative exceeds it | Hold · `CUMULATIVE_EXCEEDS_PO` |
 | inv07 | inv01 reissued under a new filename | Reject · `DUPLICATE_INVOICE` |
-| inv08 | **Unseen layout**: labels no rule covers, bundled line item, lakh digit grouping | Approve; rules find 3 fields, AI finds 8 |
+| inv08 | **Unseen layout**: labels no rule covers, bundled line item, lakh digit grouping | Approve; rules find 3 fields, AI fills the rest (2 calls) |
+| inv09, inv10 | One PO billed in two invoices | `PARTIAL_DELIVERY`, then `EXACT_MATCH` + `SPLIT_FINAL` |
+| inv11–13 | One PO billed in three invoices | partial, partial, `SPLIT_FINAL` |
+| inv14 | No PO number; exactly one open PO equals the amount | Approve · `PO_MATCHED_BY_AMOUNT` |
 
-Run inv08 with the AI toggle off to see the fallback: Hold · `MISSING_FIELD`, "AI unavailable" in the log. Across the eight, the pipeline makes three AI calls in total: two for the unseen layout, one for the poor scan, none for the other six.
+Run inv08 with the AI toggle off to see the fallback: Hold · `MISSING_FIELD`, "AI unavailable" in the log. Across the fourteen, the pipeline makes three AI calls in total: two for the unseen layout, one for the poor scan, none for the other twelve.
+
+**Resubmissions.** Only an *approved* invoice counts as a duplicate. A held or rejected invoice uploaded again is re-evaluated (so "raise the PO, resubmit, approve" works) and the earlier run is marked superseded on the dashboard. A rejected vendor-not-approved invoice resubmitted unchanged is rejected again for the same reason, tagged `RESUBMISSION`.
 
 Reference data can be extended from the app: upload a CSV in the bundled format (templates downloadable in the UI, validated column by column) or add a single vendor or PO by hand. Changes apply to the current session.
 
@@ -107,7 +111,7 @@ Deployed on Streamlit Community Cloud (`packages.txt` installs Tesseract and Pop
 ## Layout
 
 ```
-app.py                   Streamlit UI: Process, Dashboard, Reference data, How it works
+app.py                   Streamlit UI: Process, Dashboard, Reference data
 ui.py                    design tokens, CSS and HTML renderers for the console
 .streamlit/config.toml   theme
 pipeline/
@@ -124,14 +128,21 @@ pipeline/
 data/
   vendors.csv            approved vendors, aliases, GSTIN, tolerance
   purchase_orders.csv    PO register with invoiced-to-date
-  samples/               the eight test PDFs
+  samples/               the fourteen test PDFs
+docs/
+  Invoice-to-Decision_Coverage.xlsx
 tools/
-  make_invoices.py       generates the eight PDFs
+  make_invoices.py       generates the fourteen PDFs
+  make_docs_xlsx.py      generates the coverage workbook
 ```
 
 ## Assumptions
 
-One invoice per PDF. PO amounts are GST-inclusive, so invoice totals compare directly. Tolerance is set by procurement per vendor. A duplicate is the same vendor and invoice number regardless of amount, or the same file. Holds and rejects do not consume PO budget; approvals do. Inferred POs always go to a human.
+One invoice per PDF. PO amounts are GST-inclusive, so invoice totals compare directly. Tolerance is set by procurement per vendor. A duplicate is a previously approved invoice with the same vendor and invoice number, or the same file. Holds and rejects do not consume PO budget; approvals do. A PO is approved without being stated only on an exact single-amount match.
+
+## Documentation
+
+`docs/Invoice-to-Decision_Coverage.xlsx`: pipeline stages, decision rules, the 20 test scenarios, 78 edge cases from the customer's point of view with coverage status and next steps, AI policy, reference schema, assumptions, code glossary.
 
 ## What I'd build next
 

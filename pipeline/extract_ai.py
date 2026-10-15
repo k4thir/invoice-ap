@@ -140,17 +140,75 @@ def _call_groq(system: str, user: str, model: str, key: str) -> str:
     return resp.choices[0].message.content or ""
 
 
+_GEMINI_RESOLVED = {}  # configured name -> name that actually exists for this key
+_GEMINI_THINKING_OK = {}  # model -> whether it accepts thinkingConfig
+
+
+def _list_gemini_models(key: str) -> list:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}&pageSize=200"
+    with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as r:
+        data = json.loads(r.read().decode())
+    out = []
+    for m in data.get("models", []):
+        if "generateContent" in (m.get("supportedGenerationMethods") or []):
+            out.append(m["name"].split("/", 1)[-1])
+    return out
+
+
+def _pick_gemini_model(names: list) -> str:
+    """Prefer the newest plain Flash model: no lite/image/tts/live/exp/audio variants."""
+    def version(n):
+        m = re.search(r"gemini-(\d+)(?:\.(\d+))?", n)
+        return (int(m.group(1)), int(m.group(2) or 0)) if m else (0, 0)
+    bad = ("lite", "image", "tts", "live", "exp", "audio", "thinking", "embedding", "preview")
+    flash = [n for n in names if "flash" in n and not any(b in n for b in bad)]
+    if not flash:
+        flash = [n for n in names if "flash" in n and not any(b in n for b in bad[:5])]
+    if not flash:
+        flash = [n for n in names if n.startswith("gemini")]
+    return sorted(flash, key=lambda n: (version(n), -len(n)), reverse=True)[0] if flash else ""
+
+
+def resolve_gemini_model(configured: str, key: str) -> str:
+    """Return a model name that exists for this key; fall back to discovery when the configured one 404s."""
+    if configured in _GEMINI_RESOLVED:
+        return _GEMINI_RESOLVED[configured]
+    return configured
+
+
 def _call_gemini(system: str, user: str, model: str, key: str, image_png: bytes = None) -> str:
+    model = resolve_gemini_model(model, key)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
     parts = [{"text": user}]
     if image_png:
         parts.insert(0, {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_png).decode()}})
-    body = {"system_instruction": {"parts": [{"text": system}]}, "contents": [{"parts": parts}],
-            "generationConfig": {"temperature": 0, "response_mime_type": "application/json", "maxOutputTokens": 1200}}
+    gen = {"temperature": 0, "response_mime_type": "application/json", "maxOutputTokens": 4096}
+    if _GEMINI_THINKING_OK.get(model, True):
+        gen["thinkingConfig"] = {"thinkingLevel": "low"}  # extraction needs no deliberation; keeps latency and tokens down
+    body = {"system_instruction": {"parts": [{"text": system}]}, "contents": [{"parts": parts}], "generationConfig": gen}
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        data = json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as err:
+        if err.code == 400 and "thinkingConfig" in gen:
+            # this model does not take a thinking level (older Flash versions): retry once without it
+            _GEMINI_THINKING_OK[model] = False
+            return _call_gemini(system, user, model, key, image_png)
+        if err.code == 404 and model not in _GEMINI_RESOLVED.values():
+            # the configured model does not exist for this key: discover one that does, remember it, retry once
+            found = _pick_gemini_model(_list_gemini_models(key))
+            if not found or found == model:
+                raise
+            _GEMINI_RESOLVED[model] = found
+            return _call_gemini(system, user, model, key, image_png)
+        raise
     return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def gemini_model_in_use() -> str:
+    configured = _env("GEMINI_MODEL", "gemini-3.8-flash")
+    return _GEMINI_RESOLVED.get(configured, configured)
 
 
 def _is_retryable(err) -> bool:
@@ -197,8 +255,9 @@ def run(text: str, fields=None, want_line_items=False, image_png: bytes = None, 
                     model = _env("GROQ_MODEL", "openai/gpt-oss-120b")
                     content = _call_groq(system, user, model, _env("GROQ_API_KEY"))
                 else:
-                    model = _env("GEMINI_MODEL", "gemini-2.5-flash")
+                    model = _env("GEMINI_MODEL", "gemini-3.8-flash")
                     content = _call_gemini(system, user, model, _env("GEMINI_API_KEY"), image_png)
+                    model = gemini_model_in_use()
                 raw = _parse(content)
                 got, items = _normalise(raw, fields)
                 out.update(status="ok", provider=provider, model=model, fields=got, line_items=items if want_line_items else [], error=None)

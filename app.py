@@ -26,7 +26,7 @@ import pipeline  # noqa: E402
 import ui  # noqa: E402
 from pipeline import config, store, extract_ai, reference  # noqa: E402
 
-st.set_page_config(page_title="Invoice to decision", page_icon="📄", layout="wide")
+st.set_page_config(page_title="Invoice to decision", page_icon="📄", layout="wide", initial_sidebar_state="expanded")
 st.markdown(ui.CSS, unsafe_allow_html=True)
 
 # ----------------------------------------------------------------- session state
@@ -56,13 +56,13 @@ def samples_zip() -> bytes:
 with st.sidebar:
     st.markdown("## Invoice to decision")
     st.caption(f"Accounts payable for {config.BUYER_NAME}")
-    page = st.radio("Go to", ["Process invoices", "Dashboard", "Reference data", "How it works"], label_visibility="collapsed")
+    page = st.radio("Go to", ["Process invoices", "Dashboard", "Reference data"], label_visibility="collapsed")
     st.divider()
     providers = extract_ai.providers_in_order()
     if providers:
-        model = os.environ.get(f"{providers[0].upper()}_MODEL") or ("openai/gpt-oss-120b" if providers[0] == "groq" else "gemini-2.5-flash")
+        model = os.environ.get(f"{providers[0].upper()}_MODEL") or ("openai/gpt-oss-120b" if providers[0] == "groq" else "gemini-3.8-flash")
         st.caption(f"AI extractor: {providers[0]} / {model}" + (f"; fallback {providers[1]}" if len(providers) > 1 else ""))
-        st.caption("Vision for very poor scans: " + ("on (Gemini)" if extract_ai.vision_available() else "off, no Gemini key"))
+        st.caption("Vision for poor scans: " + (f"on, Gemini reads the page image ({extract_ai.gemini_model_in_use()})" if extract_ai.vision_available() else "off, no Gemini key; OCR text goes to the text model"))
     else:
         st.caption("AI extractor: off (no key configured)")
     use_ai = st.toggle("Use AI for gaps", value=bool(providers), disabled=not providers,
@@ -74,34 +74,38 @@ with st.sidebar:
         st.caption(f"Reference data: {len(st.session_state['ref_changes'])} change(s) this session")
     st.divider()
     if config.SAMPLES_DIR.exists():
-        st.download_button("Download the 8 sample invoices", samples_zip(), "sample-invoices.zip", "application/zip", use_container_width=True)
-        st.caption("Upload them on the Process page to see every path: clean, scanned, split PO, duplicate, unseen layout.")
+        n = len(list(config.SAMPLES_DIR.glob("*.pdf")))
+        st.download_button(f"Download the {n} sample invoices", samples_zip(), "sample-invoices.zip", "application/zip", use_container_width=True)
+        st.caption("Upload them on the Process page: clean, scanned, unseen layout, split POs, no PO number, over-tolerance, duplicate.")
 
 
 # ----------------------------------------------------------------- shared console renderer
-def render_console(record, rail_html=None):
+def render_console(record):
+    """Verdict, three summary cards, then the detail tabs."""
     st.markdown(ui.verdict(record), unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1, 1.75, 1.45], gap="medium")
-    with c1:
-        st.markdown(rail_html or ui.rail([{"name": s["name"], "status": s["status"], "summary": s["summary"], "ms": s["ms"]} for s in record.get("stages", [])],
-                                        dict(pipeline.STAGES), pipeline.STAGES), unsafe_allow_html=True)
-    with c2:
+    st.markdown(ui.summary_cards(record), unsafe_allow_html=True)
+    t_fields, t_match, t_pipe, t_checks = st.tabs(["Fields", "Matching", "Pipeline", "Checks"])
+    with t_fields:
         st.markdown(ui.ledger(record), unsafe_allow_html=True)
-    with c3:
+        with st.expander("Raw text the pipeline worked from"):
+            st.code(record.get("text") or "", language=None)
+    with t_match:
         st.markdown(ui.matching(record), unsafe_allow_html=True)
-    c4, c5 = st.columns([1.1, 1], gap="medium")
-    with c4:
-        st.markdown(ui.policy(record), unsafe_allow_html=True)
-    with c5:
+    with t_pipe:
+        c1, c2 = st.columns([1, 1.4], gap="medium")
+        with c1:
+            st.markdown(ui.rail([{"name": s["name"], "status": s["status"], "summary": s["summary"], "ms": s["ms"]} for s in record.get("stages", [])],
+                                dict(pipeline.STAGES), pipeline.STAGES), unsafe_allow_html=True)
+        with c2:
+            st.markdown(ui.policy(record), unsafe_allow_html=True)
+    with t_checks:
         st.markdown(ui.checks(record), unsafe_allow_html=True)
-    with st.expander("Raw text the pipeline worked from"):
-        st.code(record.get("text") or "", language=None)
 
 
 # ================================================================= page: process
 if page == "Process invoices":
     st.markdown("# Process invoices")
-    st.markdown('<p class="ap-sub">Drop one or more vendor invoice PDFs. Each one runs through the eight stages; the decision, the evidence and every AI call are shown.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="ap-sub">Drop one or more vendor invoice PDFs. Each runs through eight stages; you get the decision, the evidence behind it, and every AI call that was made.</p>', unsafe_allow_html=True)
 
     files = st.file_uploader("Invoice PDFs", type=["pdf"], accept_multiple_files=True, label_visibility="collapsed")
     run_clicked = st.button("Run", type="primary", disabled=not files)
@@ -110,31 +114,19 @@ if page == "Process invoices":
         for f in files:
             data, name = f.getvalue(), f.name
             st.markdown(f"### {name}")
-            verdict_slot = st.empty()
-            c1, c2, c3 = st.columns([1, 1.75, 1.45], gap="medium")
-            rail_slot = c1.empty()
+            live = st.empty()
             events, record = [], None
-            rail_slot.markdown(ui.rail(events, dict(pipeline.STAGES), pipeline.STAGES), unsafe_allow_html=True)
+            live.markdown(ui.rail(events, dict(pipeline.STAGES), pipeline.STAGES), unsafe_allow_html=True)
             for ev in pipeline.run(data, name, use_ai=use_ai, reference=reference_bundle()):
                 if ev["type"] == "stage":
                     events.append(ev)
-                    rail_slot.markdown(ui.rail(events, dict(pipeline.STAGES), pipeline.STAGES), unsafe_allow_html=True)
+                    live.markdown(ui.rail(events, dict(pipeline.STAGES), pipeline.STAGES), unsafe_allow_html=True)
                 else:
                     record = ev["record"]
             if record:
                 st.session_state["results"].insert(0, record)
-                verdict_slot.markdown(ui.verdict(record), unsafe_allow_html=True)
-                with c2:
-                    st.markdown(ui.ledger(record), unsafe_allow_html=True)
-                with c3:
-                    st.markdown(ui.matching(record), unsafe_allow_html=True)
-                c4, c5 = st.columns([1.1, 1], gap="medium")
-                with c4:
-                    st.markdown(ui.policy(record), unsafe_allow_html=True)
-                with c5:
-                    st.markdown(ui.checks(record), unsafe_allow_html=True)
-                with st.expander("Raw text the pipeline worked from"):
-                    st.code(record.get("text") or "", language=None)
+                live.empty()
+                render_console(record)
             st.markdown("")
     elif st.session_state["results"]:
         rec = st.session_state["results"][0]
@@ -162,7 +154,7 @@ elif page == "Dashboard":
                          "invoice": (m.get("invoice_number") or {}).get("value", "—"), "total": ui.money((m.get("total") or {}).get("value")),
                          "po": (r.get("po") or {}).get("po_number") or "—", "status": d.get("status", "Not decided"), "primary": d.get("primary_code", ""),
                          "codes": ", ".join(d.get("codes") or []), "ai": r.get("ai_call_count", ""), "read": (r.get("ingest") or {}).get("path", ""),
-                         "ms": r.get("elapsed_ms", "")})
+                         "ms": r.get("elapsed_ms", ""), "superseded": bool(r.get("superseded_by"))})
         df = pd.DataFrame(rows)
         f1, f2 = st.columns([1, 1.6])
         with f1:
@@ -190,7 +182,7 @@ elif page == "Dashboard":
 
 
 # ================================================================= page: reference data
-elif page == "Reference data":
+else:
     st.markdown("# Reference data")
     st.markdown('<p class="ap-sub">The registers that invoices are matched against. Changes here apply to this session; reload to return to the bundled data.</p>', unsafe_allow_html=True)
     tab_v, tab_p = st.tabs(["Vendors", "Purchase orders"])
@@ -277,37 +269,3 @@ elif page == "Reference data":
         st.session_state["ref_pos"] = reference.load_default_pos()
         st.session_state["ref_changes"] = []
         st.rerun()
-
-
-# ================================================================= page: how it works
-else:
-    st.markdown("# How it works")
-    st.markdown(f"""
-One invoice in, one decision out, every step visible. Rules do the work wherever they can; a language model is called only to fill a gap the rules left, and never to make the decision.
-
-| Stage | What happens | Model? |
-|---|---|---|
-| 1 Read | Text layer if the PDF has one; otherwise Tesseract OCR, which also reports a confidence score | No |
-| 2 Identify | Vendor name, GSTIN, invoice number, date, PO reference. Rules first; AI asked only for what the rules missed | Only for gaps |
-| 3 Match vendor | GSTIN exact match, then fuzzy legal name with aliases, against the vendor register | No |
-| 4 Match PO | Stated PO looked up; if none stated, inferred only when exactly one open PO fits | No |
-| 5 Amounts | Subtotal, GST lines, total. Rules first; AI asked for gaps only if the vendor or the PO matched the reference data | Only for gaps, only if worth it |
-| 6 Check | Line items sum to subtotal; subtotal + GST = total; CGST/SGST vs IGST consistent with the vendor's state; GSTIN format; date sanity; required fields | No |
-| 7 Decide | Ordered rules; first match sets the outcome; every failure listed; next action in plain words | No |
-| 8 Record | History with timings; mirrored to a private dataset so it survives host restarts | No |
-
-**The AI hierarchy, exactly as the pipeline applies it**
-
-1. Text PDF, or a scan with OCR confidence at or above {config.OCR_AI_THRESHOLD:g}%: the text is trusted. Rules run first on identity fields. If vendor name, PO reference, invoice number or date is missing, one AI call asks for exactly those. A missing GSTIN alone does not trigger a call.
-2. Vendor and PO are matched against the reference data before any money is read.
-3. Amounts: rules first. If a gap remains and at least one of vendor or PO matched, one AI call asks for the amounts and line items. If neither matched, no AI is spent: the rules' amounts are shown, and the decision will be Reject or Hold on identity grounds anyway.
-4. Scan with OCR confidence below {config.OCR_AI_THRESHOLD:g}%: the OCR text itself is suspect, so the AI reads the whole document once, at the identify stage, and the rules cross-check it. Where they disagree the AI value is kept, confidence is marked low, and the decision rules turn a low-confidence required field into a Hold.
-5. Scan below {config.OCR_VISION_THRESHOLD:g}% with a Gemini key configured: the page image goes to a vision model instead of the OCR text.
-6. AI unavailable at any point (quota, outage, no key): the stage continues on rules alone and says so. Gaps become Holds with a specific next action; nothing crashes and nothing is silently approved.
-
-Most clean invoices make zero AI calls. The worst case is two.
-
-**Decision order.** Duplicate → Reject. Unapproved vendor → Reject. Missing required field, arithmetic or GST inconsistency, bad GSTIN → Hold. No PO, PO for another vendor, closed PO, inferred PO → Hold. Over tolerance (cumulative vs PO) → Hold. Extractors disagree on a required field → Hold. Otherwise Approve, annotated exact / within tolerance / partial delivery.
-
-**Assumptions.** One invoice per PDF. PO amounts are GST-inclusive. Tolerance is a per-vendor attribute. A duplicate is the same vendor and invoice number regardless of amount, or the same file. Holds and rejects don't consume PO budget; approvals do. Reference data uploaded in the app applies to the current session.
-""")

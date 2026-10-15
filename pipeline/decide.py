@@ -32,7 +32,7 @@ HOLD = "Hold"
 APPROVE = "Approve"
 
 NEXT_ACTION = {
-    "DUPLICATE_INVOICE": "Do not pay. Reply to the vendor that {invoice_number} was already received on {dup_when} (run {dup_run}).",
+    "DUPLICATE_INVOICE": "Do not pay. {invoice_number} was already approved for payment on {dup_when} (run {dup_run}); reply to the vendor that it is a duplicate.",
     "VENDOR_NOT_APPROVED": "Route to procurement: '{vendor_name}' is not an approved vendor. Onboard the vendor first or confirm the correct legal entity.",
     "MISSING_FIELD": "Ask the vendor to reissue the invoice with: {missing}. Nothing can be matched without it.",
     "ARITHMETIC_MISMATCH": "Ask the vendor to confirm the figures: the stated total does not equal subtotal plus GST.",
@@ -57,14 +57,16 @@ def _fmt(code, ctx):
         return NEXT_ACTION.get(code, "Review manually.")
 
 
-def run(merged: dict, validation: dict, vendor: dict, po: dict, duplicate: dict) -> dict:
+def run(merged: dict, validation: dict, vendor: dict, po: dict, duplicate: dict, prior: dict = None) -> dict:
     """
     merged:     merged fields {key: {value, source, confidence, ...}}
     validation: output of validate.run
     vendor:     output of match.match_vendor
     po:         output of match.match_po
-    duplicate:  output of store.find_duplicate -> {"is_duplicate", "by", "run_id", "when"} or {"is_duplicate": False}
+    duplicate:  {"is_duplicate": True, ...} only when an earlier run APPROVED this invoice
+    prior:      an earlier non-approved run for the same invoice, now superseded (informational)
     """
+    prior = prior or {}
     def v(k):
         f = merged.get(k)
         return None if f is None else f.get("value")
@@ -132,9 +134,7 @@ def run(merged: dict, validation: dict, vendor: dict, po: dict, duplicate: dict)
     else:
         status, codes = APPROVE, []
         vp = po.get("variance_pct")
-        if vp is None:
-            codes.append("EXACT_MATCH")
-        elif abs(vp) < 0.005:
+        if vp is None or abs(vp) < 0.005:
             codes.append("EXACT_MATCH")
         elif vp < 0:
             codes.append("PARTIAL_DELIVERY")
@@ -142,10 +142,22 @@ def run(merged: dict, validation: dict, vendor: dict, po: dict, duplicate: dict)
             codes.append("WITHIN_TOLERANCE")
         primary_code = codes[0]
         next_action = {
-            "EXACT_MATCH": f"Post for payment against {po.get('po_number')}. Invoice equals the PO amount.",
+            "EXACT_MATCH": f"Post for payment against {po.get('po_number')}. Invoice closes the PO exactly.",
             "PARTIAL_DELIVERY": f"Post for payment against {po.get('po_number')}. Cumulative {ctx['cumulative']} of {ctx['po_amount']} now invoiced; balance remains open.",
             "WITHIN_TOLERANCE": f"Post for payment against {po.get('po_number')}. Invoice is {ctx['variance_pct']} over PO, inside the {ctx['tolerance_pct']}% tolerance.",
         }[primary_code]
+        if po.get("method") == "inferred_exact":
+            codes.append("PO_MATCHED_BY_AMOUNT")
+            next_action += f" The invoice did not state a PO; {po.get('po_number')} was the only open PO whose remaining balance equals it."
+        if (po.get("invoiced_before") or 0) > 0 and primary_code == "EXACT_MATCH":
+            codes.append("SPLIT_FINAL")
+        if prior.get("found"):
+            codes.append("RESUBMISSION")
+
+    if prior.get("found") and not duplicate.get("is_duplicate"):
+        if "RESUBMISSION" not in codes:
+            codes.append("RESUBMISSION")
+        explanation.append(f"Resubmission: previously {str(prior.get('status')).lower()} in run {prior.get('run_id')} on {(prior.get('when') or '')[:10]}; that run is now superseded by this evaluation.")
 
     # a short, human explanation of what the system looked at
     explanation.insert(0, vendor.get("summary") or "Vendor: nothing to match")

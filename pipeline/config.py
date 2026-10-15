@@ -39,5 +39,5 @@ VENDOR_MATCH_THRESHOLD = 0.80 # fuzzy name similarity needed to accept a vendor 
 DATE_MAX_AGE_DAYS = 365
 
 # AI usage policy
-OCR_AI_THRESHOLD = 90.0       # scans below this mean OCR confidence are read whole by the AI
-OCR_VISION_THRESHOLD = 70.0   # below this, send the page IMAGE to a vision model (needs GEMINI_API_KEY); else OCR text
+OCR_AI_THRESHOLD = 90.0       # scans below this mean OCR confidence are read whole by the AI:
+                              # the page IMAGE goes to Gemini vision when GEMINI_API_KEY is set, else the OCR text goes to Groq

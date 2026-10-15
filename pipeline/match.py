@@ -144,7 +144,10 @@ def match_po(fields: dict, vendor: dict, ledger_extra: dict, pos: pd.DataFrame =
             if abs(float(total) - remaining) <= remaining * tol / 100 or float(total) <= remaining:
                 fits.append(row)
         result["candidates"] = [r["po_number"] for r in fits]
-        if len(fits) == 1:
+        exact = [r for r in fits if abs(float(total) - (float(r["po_amount"]) - float(r["invoiced_to_date"]) - float(ledger_extra.get(r["po_number"], 0.0)))) <= config.ROUNDING_TOLERANCE]
+        if len(exact) == 1:
+            fill(exact[0], "inferred_exact")
+        elif len(fits) == 1:
             fill(fits[0], "inferred")
         else:
             result["summary"] = ("No PO reference on the invoice; "
@@ -152,7 +155,8 @@ def match_po(fields: dict, vendor: dict, ledger_extra: dict, pos: pd.DataFrame =
             return result
 
     r = result
-    how = "stated on the invoice" if r["method"] == "explicit" else "inferred (not stated on the invoice)"
+    how = {"explicit": "stated on the invoice", "inferred_exact": "not stated; the only open PO whose remaining balance equals this invoice exactly",
+           "inferred": "not stated; inferred as the only open PO that fits"}[r["method"]]
     v = f"{r['variance_pct']:+.2f}%" if r["variance_pct"] is not None else "n/a"
     r["summary"] = (f"{r['po_number']} {how}: PO {r['po_amount']:,.2f}, already invoiced {r['invoiced_before']:,.2f}, "
                     f"this invoice {float(total):,.2f} → cumulative {r['cumulative']:,.2f} ({v} vs PO)") if total is not None else f"{r['po_number']} {how}; invoice total unknown"

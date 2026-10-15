@@ -12,9 +12,9 @@ Extraction policy (rules first, AI only for gaps):
   2 identify   vendor name / GSTIN, invoice number, date, PO reference.
                Rules first. AI call only for the identity fields the rules missed.
                POOR SCAN (OCR confidence < 90%): the OCR text itself is suspect,
-               so the AI reads the whole document once, now; rules cross-check it.
-               Very poor scan (< 70%) with a Gemini key: the page image goes to
-               a vision model instead of the OCR text.
+               so the AI reads the whole document once, now. With a Gemini key
+               the page IMAGE goes to the vision model; otherwise (or if that
+               fails) the OCR text goes to the text model. Rules cross-check.
   3 vendor     match against the vendor register (GSTIN, then fuzzy name + aliases)
   4 po         match against the PO register (stated, else inferred)
   5 amounts    subtotal, GST lines, total (and line items).
@@ -73,7 +73,8 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
 
     def ai(fields, want_items, purpose, image=None):
         res = extract_ai.run(ing["text"], fields=fields, want_line_items=want_items, image_png=image, purpose=purpose)
-        record["ai_calls"].append({k: res[k] for k in ("purpose", "mode", "status", "provider", "model", "ms", "requested", "error")} | {"returned": sorted(res["fields"].keys())})
+        if res.get("attempts"):  # only count calls that actually went to a provider
+            record["ai_calls"].append({k: res[k] for k in ("purpose", "mode", "status", "provider", "model", "ms", "requested", "error")} | {"returned": sorted(res["fields"].keys())})
         return res
 
     # ---- 1 read
@@ -92,7 +93,6 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
     record["text"] = ing["text"]
     conf = ing["ocr_confidence"]
     poor_scan = ing["path"] == "ocr" and conf is not None and conf < config.OCR_AI_THRESHOLD
-    very_poor = poor_scan and conf < config.OCR_VISION_THRESHOLD
     if ing["path"] == "text_layer":
         note("Text layer present: rules read it first; AI only for gaps.")
     elif poor_scan:
@@ -107,17 +107,27 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
     # ---- 2 identify
     t0 = time.time()
     if poor_scan and use_ai:
-        image = ing.get("page_image_png") if (very_poor and extract_ai.vision_available()) else None
-        if very_poor and not image:
-            note(f"Below {config.OCR_VISION_THRESHOLD:g}%: a vision model would read the page image, but no Gemini key is set; using OCR text.")
-        res = ai(config.FIELDS, True, "full read of a poor scan", image)
+        res = None
+        if extract_ai.vision_available() and ing.get("page_image_png"):
+            res = ai(config.FIELDS, True, "full read of a poor scan", ing["page_image_png"])
+            if res["status"] != "ok":
+                note(f"Vision read failed ({res.get('error')}); falling back to the OCR text.")
+                res = None
+        else:
+            note("No Gemini key, so the page image cannot be sent to a vision model; the OCR text goes to the text model instead.")
+        if res is None:
+            res = ai(config.FIELDS, True, "full read of a poor scan (OCR text)")
+        image_used = res.get("mode") == "image" and res["status"] == "ok"
         if res["status"] == "ok":
             record["extract"]["ai"].update(res["fields"])
             m, c = merge.reconcile(rules, res["fields"], config.FIELDS)
             merged.update(m)
             conflicts.extend(c)
             line_items = res["line_items"]
-            summary = f"AI read the document ({'image' if image else 'OCR text'}, {res['provider']}, {res['ms']} ms); rules agree on {sum(1 for v in m.values() if v['source'] == 'both')}" + (f", {len(c)} conflict(s)" if c else "")
+            agree = sum(1 for v in m.values() if v["source"] == "both")
+            summary = (f"AI read the page image ({res['provider']}, {res['ms']} ms)" if image_used else f"AI read the OCR text ({res['provider']}, {res['ms']} ms)") \
+                      + f"; rules agree on {agree}" + (f", {len(c)} conflict(s)" if c else "")
+            note(("Vision model read the page image; " if image_used else "Text model read the OCR text; ") + f"rules from the OCR text cross-checked it: {agree} agree" + (f", {len(c)} differ (AI value kept, confidence low)." if c else "."))
         else:
             merged.update(merge.from_rules(rules, ing["path"], config.FIELDS))
             summary = f"Rules only: {_ai_summary(res, [])}"
@@ -153,7 +163,7 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
     if not poor_scan:
         merged.update(merge.from_rules(rules, ing["path"], config.MONEY_FIELDS))
     po = match.match_po(merged, vendor, store.po_ledger(), pos_df)
-    po_identified = po["found"] and (po.get("method") == "explicit")
+    po_identified = po["found"] and po.get("method") in ("explicit", "inferred_exact")
     yield emit("po", "ok" if po_identified and po.get("vendor_matches") is not False and po.get("po_status") == "open" else "warn", po["summary"], t0)
 
     # ---- 5 amounts
@@ -195,10 +205,14 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
 
     # ---- 7 decide
     t0 = time.time()
-    dup = store.find_duplicate(vendor.get("vendor_id"), (merged.get("vendor_name") or {}).get("value"),
-                               (merged.get("invoice_number") or {}).get("value"), ing["file_hash"])
+    prior = store.find_prior(vendor.get("vendor_id"), (merged.get("vendor_name") or {}).get("value"),
+                             (merged.get("invoice_number") or {}).get("value"), ing["file_hash"])
+    dup = {"is_duplicate": True, **prior} if prior.get("found") and prior.get("status") == "Approve" else {"is_duplicate": False}
     record["duplicate"] = dup
-    decision = decide.run(merged, val, vendor, po, dup)
+    record["prior"] = prior if (prior.get("found") and not dup["is_duplicate"]) else {"found": False}
+    if record["prior"]["found"]:
+        note(f"Seen before: run {prior['run_id']} ended as {prior['status']}. Not a duplicate (nothing was paid), so it is re-evaluated and the earlier run is superseded.")
+    decision = decide.run(merged, val, vendor, po, dup, record["prior"])
     record["decision"] = decision
     yield emit("decide", {"Approve": "ok", "Hold": "warn", "Reject": "failed"}[decision["status"]], f"{decision['status']}: {decision['primary_code']}", t0)
 
@@ -207,6 +221,8 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
     record["elapsed_ms"] = int((time.time() - started) * 1000)
     record["ai_call_count"] = len(record["ai_calls"])
     store.save(record)
+    if record["prior"]["found"]:
+        store.mark_superseded(record["prior"]["run_id"], run_id)
     sync = store.sync_status()
     where = "history and mirror" if sync["configured"] and not sync.get("error") else "history"
     yield emit("record", "ok", f"Saved to {where}; {record['ai_call_count']} AI call(s); {record['elapsed_ms']} ms end to end", t0)

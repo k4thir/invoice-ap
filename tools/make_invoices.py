@@ -38,6 +38,7 @@ VENDORS = {
     "V003": dict(name="Bharat Steel Tubes Ltd", addr="Survey 88, GIDC Vatva, Ahmedabad 382445, Gujarat", gstin="24AAACB9012H1Z7", state="Gujarat"),
     "V004": dict(name="Pune Packaging Co", addr="Unit 6, Talawade Industrial Estate, Pune 412114, Maharashtra", gstin="27AAEFP3456M1Z9", state="Maharashtra"),
     "V005": dict(name="Nexora Industrial Supplies Pvt Ltd", addr="No. 42, Peenya 2nd Stage, Bengaluru 560058, Karnataka", gstin="29AACCN7890P1Z1", state="Karnataka"),
+    "V006": dict(name="Sahyadri Electricals", addr="D-9, Pimpri Industrial Area, Pune 411018, Maharashtra", gstin="27AAGCS2345Q1Z4", state="Maharashtra"),
 }
 
 
@@ -87,7 +88,8 @@ def layout_a(path, v, inv_no, inv_date, po, items, footer=None, omit_invoice_no=
     c.drawString(20 * mm, y, "Invoice No: " + ("" if omit_invoice_no else inv_no))
     c.drawString(110 * mm, y, f"Invoice Date: {inv_date}")
     y -= 6 * mm
-    c.drawString(20 * mm, y, f"PO No: {po}")
+    if po:
+        c.drawString(20 * mm, y, f"PO No: {po}")
     c.drawString(110 * mm, y, "Place of Supply: Maharashtra (27)")
 
     y -= 12 * mm
@@ -458,6 +460,37 @@ def main():
     layout_d(p8, VENDORS["V005"], "NXR/TI/4471", "03-Oct-2026", "PO-1048",
              [("Bearings and seals kit, per PO spec (bundled)", "84829900", 1, 150000.0, 150000.0)])
     spec.append((p8.name, "Approve, exact match to PO-1048; rules miss most fields, AI extracts them"))
+
+    # 9-10  split 1 -> 2 against PO-1055 (118,000): 59,000 + 59,000
+    p9 = OUT / "inv09_sahyadri_SE-1101_split1of2.pdf"
+    layout_a(p9, VENDORS["V006"], "SE/26-27/1101", "07/10/2026", "PO-1055",
+             [("MCB 32A 4-pole, 10kA", "85362010", 100, 50000.0, 500.0)])
+    spec.append((p9.name, "Approve, PARTIAL_DELIVERY: 59,000 of 118,000 on PO-1055"))
+    p10 = OUT / "inv10_sahyadri_SE-1108_split2of2.pdf"
+    layout_a(p10, VENDORS["V006"], "SE/26-27/1108", "12/10/2026", "PO-1055",
+             [("Contactor 40A AC-3", "85364900", 50, 30000.0, 600.0),
+              ("Panel enclosure IP54 600x800", "85381010", 10, 20000.0, 2000.0)])
+    spec.append((p10.name, "Approve, EXACT_MATCH + SPLIT_FINAL: cumulative 118,000 closes PO-1055"))
+
+    # 11-13  split 1 -> 3 against PO-1057 (118,000): 59,000 + 23,600 + 35,400
+    p11 = OUT / "inv11_deccan_DP-2610-131_split1of3.pdf"
+    layout_b(p11, VENDORS["V002"], "DP/2610/131", "08-10-2026", "PO-1057",
+             [("Masterbatch white, grade A", "32061110", 250, 50000.0, 200.0)])
+    spec.append((p11.name, "Approve, PARTIAL_DELIVERY: 59,000 of 118,000 on PO-1057"))
+    p12 = OUT / "inv12_deccan_DP-2610-137_split2of3.pdf"
+    layout_b(p12, VENDORS["V002"], "DP/2610/137", "10-10-2026", "PO-1057",
+             [("Masterbatch black, grade B", "32061190", 100, 20000.0, 200.0)])
+    spec.append((p12.name, "Approve, PARTIAL_DELIVERY: 82,600 of 118,000 on PO-1057"))
+    p13 = OUT / "inv13_deccan_DP-2610-142_split3of3.pdf"
+    layout_b(p13, VENDORS["V002"], "DP/2610/142", "13-10-2026", "PO-1057",
+             [("Masterbatch blue, grade C", "32061990", 150, 30000.0, 200.0)])
+    spec.append((p13.name, "Approve, EXACT_MATCH + SPLIT_FINAL: cumulative 118,000 closes PO-1057"))
+
+    # 14  no PO stated; exactly one open PO for the vendor equals the amount (PO-1053, 35,400)
+    p14 = OUT / "inv14_pune_packaging_no_po.pdf"
+    layout_a(p14, VENDORS["V004"], "PPC/26-27/0450", "09/10/2026", "",
+             [("Stretch film 23 micron, 500mm x 300m", "39201012", 300, 30000.0, 100.0)])
+    spec.append((p14.name, "Approve, PO_MATCHED_BY_AMOUNT: no PO stated, PO-1053 is the only open PO that equals 35,400"))
 
     print("Generated:")
     for name, expect in spec:

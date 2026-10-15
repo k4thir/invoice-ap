@@ -30,25 +30,43 @@ html,body,.stApp,.stApp p,.stApp div,.stApp label,.stApp button,.stApp input,.st
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p{color:var(--muted)}
 .block-container{padding-top:1.6rem;padding-bottom:3rem;max-width:1440px}
 h1,h2,h3{letter-spacing:-.01em;color:var(--ink)}
-h1{font-size:26px;font-weight:600;margin:0 0 2px}
+h1{font-size:24px;font-weight:600;margin:0 0 2px}
 h2{font-size:17px;font-weight:600;margin:0 0 10px}
-.ap-sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+.ap-sub{color:var(--muted);margin:0 0 16px;font-size:13.5px;max-width:80ch}
 code,.mono{font-family:var(--mono)!important}
 
 /* verdict strip */
-.ap-verdict{display:grid;grid-template-columns:auto 1fr;gap:6px 28px;align-items:center;background:var(--panel);border-left:6px solid var(--s);border-radius:6px;padding:16px 22px;margin:4px 0 14px}
-.ap-verdict .word{font-size:34px;font-weight:600;line-height:1;color:var(--s)}
-.ap-verdict .file{color:var(--muted);font-size:13px;margin-top:6px;font-family:var(--mono)}
-.ap-verdict .act{font-size:15px;color:var(--ink);line-height:1.45}
-.ap-verdict .codes{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+.ap-verdict{display:grid;grid-template-columns:minmax(220px,auto) 1fr;gap:4px 32px;align-items:center;background:var(--panel);border-left:5px solid var(--s);border-radius:6px;padding:16px 20px;margin:2px 0 12px}
+.ap-verdict .word{font-size:30px;font-weight:600;line-height:1.05;color:var(--s);letter-spacing:-.01em}
+.ap-verdict .file{color:var(--muted);font-size:12.5px;margin-top:6px;font-family:var(--mono)}
+.ap-verdict .act{font-size:14.5px;color:var(--ink);line-height:1.5}
+.ap-verdict .codes{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+
+/* summary cards */
+.ap-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0 0 14px}
+.ap-card{background:var(--panel);border-radius:6px;padding:14px 16px;border-top:2px solid var(--c,var(--line));min-width:0}
+.ap-card .l{font-size:12px;color:var(--muted);margin-bottom:6px}
+.ap-card .h{font-size:15px;color:var(--ink);font-weight:500;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ap-card .h .mono{color:var(--muted);font-size:12.5px;margin-left:6px}
+.ap-card .d{font-size:12.5px;color:var(--muted);margin-top:4px;line-height:1.45}
+.ap-card .n{font-family:var(--mono);color:var(--ink)}
+.ap-card .n.s{color:var(--c)}
+
+/* tabs */
+.stTabs [data-baseweb="tab-list"]{gap:2px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.stTabs [data-baseweb="tab"]{padding:8px 14px;font-size:13.5px;color:var(--muted);background:transparent}
+.stTabs [aria-selected="true"]{color:var(--ink)}
+.stTabs [data-baseweb="tab-highlight"]{background:var(--accent)}
+.stTabs [data-baseweb="tab-border"]{display:none}
 .ap-pill{display:inline-block;font-family:var(--mono);font-size:11.5px;padding:2px 8px;border-radius:3px;border:1px solid var(--line);color:var(--muted);background:transparent;white-space:nowrap}
 .ap-pill.primary{border-color:var(--s);color:var(--s)}
 .ap-pill.s-Approve{border-color:#3DDC97;color:#3DDC97}.ap-pill.s-Hold{border-color:#FFB454;color:#FFB454}.ap-pill.s-Reject{border-color:#FF5C7A;color:#FF5C7A}
 
 /* panels */
-.ap-panel{background:var(--panel);border-radius:6px;padding:14px 16px 10px;margin-bottom:12px;border-top:2px solid var(--line);min-width:0;overflow:hidden}
+.ap-panel{background:var(--panel);border-radius:6px;padding:14px 16px 12px;margin-bottom:12px;border-top:2px solid var(--line);min-width:0;overflow:hidden}
 .ap-panel.ok{border-top-color:var(--ok)}.ap-panel.warn{border-top-color:var(--warn)}.ap-panel.bad{border-top-color:var(--bad)}.ap-panel.accent{border-top-color:var(--accent)}
-.ap-panel h3{font-size:13px;font-weight:600;color:var(--muted);margin:0 0 10px;letter-spacing:0}
+.ap-panel h3{font-size:12.5px;font-weight:600;color:var(--muted);margin:0 0 10px;letter-spacing:0}
+.ap-panel h3 .sub{font-weight:400;color:var(--dim)}
 
 /* stage rail */
 .ap-step{display:grid;grid-template-columns:12px 1fr auto;gap:10px;align-items:start;padding:8px 0;border-bottom:1px solid var(--line)}
@@ -177,6 +195,48 @@ def verdict(record, filename=None):
             f'<div><div class="act">{e(d.get("next_action") or "")}</div><div class="codes">{chips}</div></div></div>')
 
 
+# ----------------------------------------------------------------- summary cards
+def summary_cards(record):
+    v = record.get("vendor") or {}
+    p = record.get("po") or {}
+    ex = record.get("extract") or {}
+    merged = ex.get("merged") or {}
+    d = record.get("decision") or {}
+    ing = record.get("ingest") or {}
+
+    # vendor
+    vc = "#3DDC97" if v.get("approved") else "#FF5C7A"
+    vh = f'{e(v.get("legal_name") or (merged.get("vendor_name") or {}).get("value") or "No vendor matched")}' + (f'<span class="mono">{e(v["vendor_id"])}</span>' if v.get("vendor_id") else "")
+    vd = e(v.get("how") or v.get("summary") or "")
+
+    # po
+    if p.get("found"):
+        over = (p.get("variance_pct") or 0) > float(p.get("tolerance_pct") or 2)
+        pc = "#FFB454" if (over or p.get("method") == "inferred" or p.get("vendor_matches") is False or p.get("po_status") != "open") else "#3DDC97"
+        ph = f'<span class="mono">{e(p["po_number"])}</span> {e(p.get("description", ""))}'
+        pd_ = (f'<span class="n">{money(p.get("cumulative"))}</span> of <span class="n">{money(p.get("po_amount"))}</span> after this invoice'
+               + (f' <span class="n s">({p["variance_pct"]:+.2f}%)</span>' if p.get("variance_pct") is not None else ""))
+    else:
+        pc, ph, pd_ = "#FFB454", "No PO matched", e(p.get("summary") or "")
+
+    # extraction
+    found = sum(1 for k in config.FIELDS if k in merged)
+    intra, inter = ("cgst" in merged or "sgst" in merged), ("igst" in merged)
+    expected = len(config.FIELDS) - (1 if intra and not inter else 2 if inter and not intra else 0)  # only one GST form applies
+    low = sum(1 for k in config.FIELDS if merged.get(k, {}).get("confidence") == "low")
+    ai_n = record.get("ai_call_count") or 0
+    ec = "#FFB454" if low or (ex.get("ai_status") == "unavailable") else "#7AA2FF"
+    eh = f'{found} of {expected} fields read'
+    path = "scan, OCR " + str(ing.get("ocr_confidence")) + "%" if ing.get("path") == "ocr" else "text layer"
+    ed = f'{e(path)}; {ai_n} AI call{"s" if ai_n != 1 else ""}' + (f'; <span style="color:#FFB454">{low} low-confidence</span>' if low else "") + (f'; {record.get("elapsed_ms")} ms' if record.get("elapsed_ms") is not None else "")
+
+    return (f'<div class="ap-cards">'
+            f'<div class="ap-card" style="--c:{vc}"><div class="l">Vendor</div><div class="h">{vh}</div><div class="d">{vd}</div></div>'
+            f'<div class="ap-card" style="--c:{pc}"><div class="l">Purchase order</div><div class="h">{ph}</div><div class="d">{pd_}</div></div>'
+            f'<div class="ap-card" style="--c:{ec}"><div class="l">Extraction</div><div class="h">{eh}</div><div class="d">{ed}</div></div>'
+            f'</div>')
+
+
 # ----------------------------------------------------------------- stage rail
 def rail(events, stage_labels, all_stages):
     done = {ev["name"]: ev for ev in events}
@@ -268,17 +328,22 @@ def matching(record):
               f'<div><div class="l">This invoice</div><div class="n s">{money(this)}</div></div>'
               f'<div><div class="l">Cumulative</div><div class="n">{money(cum)}</div></div>'
               f'<div><div class="l">Variance vs PO</div><div class="n {"s" if over else ""}">{f"{variance:+.2f}%" if variance is not None else "—"}</div></div></div>')
-        pcls = "ok" if (p.get("method") == "explicit" and p.get("vendor_matches") is not False and p.get("po_status") == "open" and not (variance or 0) > tol) else "warn"
+        pcls = "ok" if (p.get("method") in ("explicit", "inferred_exact") and p.get("vendor_matches") is not False and p.get("po_status") == "open" and not (variance or 0) > tol) else "warn"
+        method_label = {"explicit": "stated on invoice", "inferred_exact": "matched by exact amount, not stated", "inferred": "inferred, not stated"}.get(p.get("method"), p.get("method"))
         head = (f'<div style="font-size:14px;color:var(--ink)"><span class="mono">{e(p["po_number"])}</span> &nbsp;{e(p.get("description", ""))}'
-                f' &nbsp;<span style="color:var(--muted);font-size:12px">{e(p.get("method"))}, {e(p.get("po_status"))}</span></div>')
+                f' &nbsp;<span style="color:var(--muted);font-size:12px">{e(method_label)}, {e(p.get("po_status"))}</span></div>')
         out.append(f'<div class="ap-panel {pcls}"><h3>Purchase order</h3>{head}{bar}{kv}</div>')
     else:
         out.append(f'<div class="ap-panel warn"><h3>Purchase order</h3><div style="font-size:14px;color:var(--ink)">No PO matched</div><p class="ap-line">{e(p.get("summary"))}</p></div>')
 
     dup = record.get("duplicate") or {}
     if dup.get("is_duplicate"):
-        out.append(f'<div class="ap-panel bad"><h3>Duplicate</h3><p class="ap-line" style="color:var(--ink)">Matched by {e(dup["by"])} to run '
-                   f'<span class="mono">{e(dup["run_id"])}</span> ({e(dup.get("filename"))}, {e((dup.get("when") or "")[:10])})</p></div>')
+        out.append(f'<div class="ap-panel bad"><h3>Duplicate of an approved invoice</h3><p class="ap-line" style="color:var(--ink)">Matched by {e(dup["by"].replace("_", " "))} to run '
+                   f'<span class="mono">{e(dup["run_id"])}</span> ({e(dup.get("filename"))}, {e((dup.get("when") or "")[:10])}), which was approved for payment.</p></div>')
+    prior = record.get("prior") or {}
+    if prior.get("found"):
+        out.append(f'<div class="ap-panel accent"><h3>Resubmission</h3><p class="ap-line" style="color:var(--ink)">Previously <b>{e(prior.get("status"))}</b> in run '
+                   f'<span class="mono">{e(prior.get("run_id"))}</span> on {e((prior.get("when") or "")[:10])}. Nothing was paid, so it is evaluated afresh; the earlier run is marked superseded.</p></div>')
     return "".join(out)
 
 
@@ -318,12 +383,13 @@ def policy(record):
 
 # ----------------------------------------------------------------- dashboard
 def kpis(runs):
+    runs = [r for r in runs if not r.get("superseded_by")]
     statuses = [(r.get("decision") or {}).get("status", "Not decided") for r in runs]
     n = len(runs) or 1
     a, h, rj = statuses.count("Approve"), statuses.count("Hold"), statuses.count("Reject")
     ai = sum(r.get("ai_call_count", 0) or 0 for r in runs)
     avg = int(sum(r.get("elapsed_ms", 0) or 0 for r in runs) / n)
-    tiles = [("Runs", len(runs), "this history", None),
+    tiles = [("Invoices", len(runs), "current evaluations", None),
              ("Approved", a, f"{a / n:.0%}", STATUS["Approve"]), ("On hold", h, f"{h / n:.0%}", STATUS["Hold"]),
              ("Rejected", rj, f"{rj / n:.0%}", STATUS["Reject"]), ("AI calls", ai, f"{ai / n:.1f} per invoice, {avg} ms avg", "#7AA2FF")]
     tile_html = "".join(f'<div class="ap-kpi" style="--c:{c or "var(--ink)"}"><div class="l">{e(l)}</div><div class="n">{v}</div><div class="h">{e(hh)}</div></div>' for l, v, hh, c in tiles)
@@ -336,7 +402,8 @@ def runs_table(rows):
     """rows: list of dicts with keys run, when, file, vendor, invoice, total, po, status, primary, codes, ai, read, ms"""
     trs = []
     for r in rows:
-        trs.append(f'<tr><td class="m mut">{e(r["run"])}</td><td class="mut">{e(r["when"])}</td>'
+        sup = ' <span class="ap-pill" title="replaced by a later evaluation">superseded</span>' if r.get("superseded") else ""
+        trs.append(f'<tr style="{"opacity:.55" if r.get("superseded") else ""}"><td class="m mut">{e(r["run"])}{sup}</td><td class="mut">{e(r["when"])}</td>'
                    f'<td>{e(r["file"])}</td><td>{e(r["vendor"])}</td><td class="m">{e(r["invoice"])}</td><td class="num">{e(r["total"])}</td><td class="m">{e(r["po"])}</td>'
                    f'<td>{pill(r["status"], "s-" + r["status"])}</td><td class="m mut">{e(r["primary"])}</td><td class="mut">{e(r["read"])}</td>'
                    f'<td class="num">{e(r["ai"])}</td><td class="num">{e(r["ms"])}</td></tr>')

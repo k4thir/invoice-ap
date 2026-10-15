@@ -90,3 +90,17 @@ Reboot the app after changing secrets.
 - IMPORTANT: upload the hidden folder .streamlit (it holds config.toml, the theme). On a Mac press Cmd+Shift+. in Finder to show hidden files.
 - Reference data page: upload a CSV in the template format (download the template there), or add one row by hand. Session-only by design.
 - If you later add GEMINI_API_KEY, scans under 70% OCR confidence are read from the page image.
+
+## Gemini vision (poor scans)
+1. aistudio.google.com -> Get API key -> Create API key (free tier; no card).
+2. .env:  GEMINI_API_KEY=AIza...   GEMINI_MODEL=gemini-3.8-flash
+3. Streamlit secrets: the same two lines in TOML form, then Reboot app.
+4. Sidebar should read "Vision for poor scans: on, Gemini reads the page image".
+5. Run inv04 (the scan): the Identify stage says "AI read the page image (gemini, ...)" and the AI-calls table shows "image to gemini".
+
+# Day 3, second pass
+- 14 sample invoices now (splits 1->2 and 1->3, and a no-PO invoice). Replace data/samples and data/purchase_orders.csv.
+- Duplicate = previously approved only; held/rejected resubmissions are re-evaluated and the old run is marked superseded.
+- How it works page removed (README.md and docs/ carry that content). Run view is now verdict + 3 cards + tabs.
+- Documentation workbook: docs/Invoice-to-Decision_Coverage.xlsx (regenerate with python tools/make_docs_xlsx.py).
+- Suggested live order: inv01, inv08, inv04, inv05, inv06, inv07, inv14, inv09, inv10, inv03, then raise PO-1041 on Reference data and re-run inv03, then inv08 with AI off.
