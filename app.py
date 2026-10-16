@@ -1,5 +1,5 @@
 """
-Invoice to decision - AP automation console for Katlabs Pvt Ltd.
+Invoice to decision - AP automation console for Meridian Components Pvt Ltd.
 
 Run locally:               streamlit run app.py
 Streamlit Community Cloud: main file app.py; keys in the app's Secrets.
