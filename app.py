@@ -174,7 +174,7 @@ elif page == "Dashboard":
             render_console(rec)
 
         with st.expander("Reset"):
-            st.caption("Clears all recorded runs (and the mirror, if configured). Do this before a demo to start from a clean PO ledger.")
+            st.caption("Clears all recorded runs.")
             if st.button("Clear history"):
                 store.clear_live()
                 st.session_state["results"] = []
