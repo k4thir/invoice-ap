@@ -371,10 +371,11 @@ def policy(record):
     call_rows = ""
     if calls:
         trs = "".join(
-            f'<tr><td>{e(c.get("purpose"))}<div class="mut" style="font-size:11px">{e(c.get("mode"))} to {e(c.get("provider") or "")}</div></td>'
+            f'<tr><td>{e(c.get("purpose"))}<div class="mut" style="font-size:11px">{e({"pdf": "original PDF", "image": "page image", "text": "text"}.get(c.get("mode"), c.get("mode")))} to {e(c.get("provider") or "")}</div></td>'
             f'<td class="wrap mut">{e(", ".join(c.get("requested") or []))}</td>'
             f'<td class="wrap">{e(", ".join(c.get("returned") or []) or "—")}</td>'
-            f'<td class="num" style="color:{"var(--ok)" if c.get("status") == "ok" else "var(--bad)"}">{e(c.get("status"))}<div class="mut" style="font-size:11px">{e(c.get("ms"))} ms</div></td></tr>'
+            f'<td class="num" style="color:{"var(--ok)" if c.get("status") == "ok" else "var(--bad)"}">{e(c.get("status"))}<div class="mut" style="font-size:11px">{e(c.get("ms"))} ms</div>'
+            f'{("<div class=wrap style=color:var(--bad);text-align:left>" + e(c.get("error")) + "</div>") if c.get("status") != "ok" and c.get("error") else ""}</td></tr>'
             for c in calls)
         call_rows = (f'<h3 style="margin-top:14px">AI calls</h3><table class="ap-table fixed"><colgroup><col style="width:24%"><col style="width:32%"><col style="width:30%"><col style="width:14%"></colgroup>'
                      f'<thead><tr><th>Purpose</th><th>Asked for</th><th>Returned</th><th style="text-align:right">Result</th></tr></thead><tbody>{trs}</tbody></table>')

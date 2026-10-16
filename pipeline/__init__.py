@@ -71,8 +71,8 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
     def note(msg):
         record["policy"].append(msg)
 
-    def ai(fields, want_items, purpose, image=None):
-        res = extract_ai.run(ing["text"], fields=fields, want_line_items=want_items, image_png=image, purpose=purpose)
+    def ai(fields, want_items, purpose, image=None, pdf=None):
+        res = extract_ai.run(ing["text"], fields=fields, want_line_items=want_items, image_png=image, purpose=purpose, pdf_bytes=pdf)
         if res.get("attempts"):  # only count calls that actually went to a provider
             record["ai_calls"].append({k: res[k] for k in ("purpose", "mode", "status", "provider", "model", "ms", "requested", "error")} | {"returned": sorted(res["fields"].keys())})
         return res
@@ -108,8 +108,8 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
     t0 = time.time()
     if poor_scan and use_ai:
         res = None
-        if extract_ai.vision_available() and ing.get("page_image_png"):
-            res = ai(config.FIELDS, True, "full read of a poor scan", ing["page_image_png"])
+        if extract_ai.vision_available():
+            res = ai(config.FIELDS, True, "full read of a poor scan", ing.get("page_image_png"), data)
             if res["status"] != "ok":
                 note(f"Vision read failed ({res.get('error')}); falling back to the OCR text.")
                 res = None
@@ -117,7 +117,7 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
             note("No Gemini key, so the page image cannot be sent to a vision model; the OCR text goes to the text model instead.")
         if res is None:
             res = ai(config.FIELDS, True, "full read of a poor scan (OCR text)")
-        image_used = res.get("mode") == "image" and res["status"] == "ok"
+        image_used = res.get("mode") in ("image", "pdf") and res["status"] == "ok"
         if res["status"] == "ok":
             record["extract"]["ai"].update(res["fields"])
             m, c = merge.reconcile(rules, res["fields"], config.FIELDS)
@@ -125,9 +125,9 @@ def run(data: bytes, filename: str, use_ai: bool = True, reference: dict = None)
             conflicts.extend(c)
             line_items = res["line_items"]
             agree = sum(1 for v in m.values() if v["source"] == "both")
-            summary = (f"AI read the page image ({res['provider']}, {res['ms']} ms)" if image_used else f"AI read the OCR text ({res['provider']}, {res['ms']} ms)") \
+            summary = (f"AI read the document itself ({res['provider']}, {res['ms']} ms)" if image_used else f"AI read the OCR text ({res['provider']}, {res['ms']} ms)") \
                       + f"; rules agree on {agree}" + (f", {len(c)} conflict(s)" if c else "")
-            note(("Vision model read the page image; " if image_used else "Text model read the OCR text; ") + f"rules from the OCR text cross-checked it: {agree} agree" + (f", {len(c)} differ (AI value kept, confidence low)." if c else "."))
+            note(("Vision model read the original document; " if image_used else "Text model read the OCR text; ") + f"rules from the OCR text cross-checked it: {agree} agree" + (f", {len(c)} differ (AI value kept, confidence low)." if c else "."))
         else:
             merged.update(merge.from_rules(rules, ing["path"], config.FIELDS))
             summary = f"Rules only: {_ai_summary(res, [])}"

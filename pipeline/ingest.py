@@ -40,7 +40,7 @@ def ocr(data: bytes, dpi: int = 300):
         gray = img.convert("L")
         if first_png is None:
             buf = io.BytesIO()
-            img.convert("RGB").resize((img.width // 2, img.height // 2)).save(buf, "PNG", optimize=True)
+            img.convert("RGB").save(buf, "JPEG", quality=88)  # full 300 dpi page as JPEG, ~0.5-1 MB
             first_png = buf.getvalue()
         texts.append(pytesseract.image_to_string(gray))
         try:
@@ -50,6 +50,21 @@ def ocr(data: bytes, dpi: int = 300):
             pass
     mean_conf = round(sum(confs) / len(confs), 1) if confs else None
     return "\n\f\n".join(texts), len(images), mean_conf, first_png
+
+
+def usable_text_layer(text: str) -> bool:
+    """
+    A text layer is only trusted if it looks like real invoice text. Phone scanner apps
+    often embed an OCR layer that is garbage for handwriting; those should go down the
+    scan path so the vision model sees the page.
+    """
+    t = text.strip()
+    if len(t) < MIN_TEXT_CHARS:
+        return False
+    words = re.findall(r"[A-Za-z]{2,}", t)
+    digits = re.findall(r"\d", t)
+    alnum_ratio = sum(ch.isalnum() for ch in t) / max(1, len(t))
+    return len(words) >= 25 and len(digits) >= 6 and alnum_ratio >= 0.5
 
 
 def clean(text: str) -> str:
@@ -68,11 +83,11 @@ def run(data: bytes, filename: str) -> dict:
         "pages": 0,
         "ocr_confidence": None,
         "text": "",
-        "page_image_png": None,
+        "page_image_png": None,  # JPEG bytes despite the name; see ocr()
         "summary": "",
     }
     text, pages = read_text_layer(data)
-    if len(text.strip()) >= MIN_TEXT_CHARS:
+    if usable_text_layer(text):
         result.update(path="text_layer", pages=pages, text=clean(text))
         result["summary"] = f"Text layer found: {len(result['text']):,} characters across {pages} page(s)"
         return result

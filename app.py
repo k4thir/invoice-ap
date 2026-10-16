@@ -1,5 +1,5 @@
 """
-Invoice to decision - AP automation console for Meridian Components Pvt Ltd.
+Invoice to decision - AP automation console for Katlabs Pvt Ltd.
 
 Run locally:               streamlit run app.py
 Streamlit Community Cloud: main file app.py; keys in the app's Secrets.
@@ -68,8 +68,8 @@ with st.sidebar:
     use_ai = st.toggle("Use AI for gaps", value=bool(providers), disabled=not providers,
                        help="Off: rules only. Anything the rules can't read becomes a Hold.")
     sync = store.sync_status()
-    st.caption(("History mirrored to " + sync["repo"]) if sync["configured"] and not sync.get("error")
-               else ("Mirror error: " + sync["error"]) if sync.get("error") else "History: local file only")
+    # st.caption(("History mirrored to " + sync["repo"]) if sync["configured"] and not sync.get("error")
+    #            else ("Mirror error: " + sync["error"]) if sync.get("error") else "History: local file only")
     if st.session_state["ref_changes"]:
         st.caption(f"Reference data: {len(st.session_state['ref_changes'])} change(s) this session")
     st.divider()

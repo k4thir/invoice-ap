@@ -7,7 +7,7 @@ nothing more, so the model's job is as narrow as possible and its output is
 treated as a candidate to be checked, never a decision.
 
   run(text, fields=[...], want_line_items=False)          text -> Groq (default) or Gemini
-  run(text, fields=[...], image_png=<bytes>)              page image -> Gemini vision (needs GEMINI_API_KEY)
+  run(text, fields=[...], pdf_bytes=<bytes>)              the original PDF -> Gemini (needs GEMINI_API_KEY); image_png as fallback
 
 Configuration (environment; app.py copies Streamlit secrets into it):
   AI_PROVIDER      groq | gemini | none
@@ -51,7 +51,8 @@ Return ONLY a JSON object with exactly these keys (use null when a value is not 
 {chr(10).join(lines)}
 
 Rules:
-- Never guess, infer or calculate a value that is not printed. If a field is blank on the invoice, return null for it.
+- Never infer or calculate a value that is not on the document. If a field is blank on the invoice, return null for it.
+- If the invoice is handwritten or a poor scan, read it carefully as a person would and transcribe what is written; return null only when a value is truly illegible or absent.
 - Amounts are plain numbers: "1,50,000.00" -> 150000.00, "INR 118,000.00" -> 118000.00. No symbols, no separators.
 - Return only the keys listed. No prose, no markdown fences."""
 
@@ -176,15 +177,22 @@ def resolve_gemini_model(configured: str, key: str) -> str:
     return configured
 
 
-def _call_gemini(system: str, user: str, model: str, key: str, image_png: bytes = None) -> str:
+def _call_gemini(system: str, user: str, model: str, key: str, image_png: bytes = None, pdf_bytes: bytes = None) -> str:
     model = resolve_gemini_model(model, key)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
     parts = [{"text": user}]
-    if image_png:
-        parts.insert(0, {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_png).decode()}})
+    attached = False
+    if pdf_bytes and len(pdf_bytes) <= 15_000_000:
+        parts.insert(0, {"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(pdf_bytes).decode()}})
+        attached = True
+    elif image_png:
+        mime = "image/png" if image_png[:4] == b"\x89PNG" else "image/jpeg"
+        parts.insert(0, {"inline_data": {"mime_type": mime, "data": base64.b64encode(image_png).decode()}})
+        attached = True
     gen = {"temperature": 0, "response_mime_type": "application/json", "maxOutputTokens": 4096}
     if _GEMINI_THINKING_OK.get(model, True):
-        gen["thinkingConfig"] = {"thinkingLevel": "low"}  # extraction needs no deliberation; keeps latency and tokens down
+        # printed text needs no deliberation; a document image (handwriting, poor scans) benefits from more
+        gen["thinkingConfig"] = {"thinkingLevel": "medium" if attached else "low"}
     body = {"system_instruction": {"parts": [{"text": system}]}, "contents": [{"parts": parts}], "generationConfig": gen}
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     try:
@@ -194,14 +202,14 @@ def _call_gemini(system: str, user: str, model: str, key: str, image_png: bytes 
         if err.code == 400 and "thinkingConfig" in gen:
             # this model does not take a thinking level (older Flash versions): retry once without it
             _GEMINI_THINKING_OK[model] = False
-            return _call_gemini(system, user, model, key, image_png)
+            return _call_gemini(system, user, model, key, image_png, pdf_bytes)
         if err.code == 404 and model not in _GEMINI_RESOLVED.values():
             # the configured model does not exist for this key: discover one that does, remember it, retry once
             found = _pick_gemini_model(_list_gemini_models(key))
             if not found or found == model:
                 raise
             _GEMINI_RESOLVED[model] = found
-            return _call_gemini(system, user, model, key, image_png)
+            return _call_gemini(system, user, model, key, image_png, pdf_bytes)
         raise
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
@@ -230,16 +238,16 @@ def vision_available() -> bool:
 
 
 # ----------------------------------------------------------------- entry point
-def run(text: str, fields=None, want_line_items=False, image_png: bytes = None, purpose: str = "", max_retries: int = 2) -> dict:
+def run(text: str, fields=None, want_line_items=False, image_png: bytes = None, purpose: str = "", max_retries: int = 2, pdf_bytes: bytes = None) -> dict:
     """Returns {"status": ok|unavailable, "provider", "model", "ms", "fields", "line_items", "requested", "purpose", "mode", "error", "attempts"}."""
     fields = list(fields or config.FIELDS)
     t0 = time.time()
     out = {"status": "unavailable", "provider": None, "model": None, "ms": 0, "fields": {}, "line_items": [],
-           "requested": fields, "purpose": purpose, "mode": "image" if image_png else "text", "error": None, "attempts": []}
+           "requested": fields, "purpose": purpose, "mode": "pdf" if pdf_bytes else ("image" if image_png else "text"), "error": None, "attempts": []}
     system = build_prompt(fields, want_line_items)
-    user = ("Read the attached invoice image." if image_png else "Invoice text:\n\n" + text[:12000])
+    user = ("Read the attached invoice." if (image_png or pdf_bytes) else "Invoice text:\n\n" + text[:12000])
 
-    if image_png:
+    if image_png or pdf_bytes:
         order = ["gemini"] if vision_available() else []
         if not order:
             out["error"] = "Image reading needs GEMINI_API_KEY; not set"
@@ -256,7 +264,7 @@ def run(text: str, fields=None, want_line_items=False, image_png: bytes = None, 
                     content = _call_groq(system, user, model, _env("GROQ_API_KEY"))
                 else:
                     model = _env("GEMINI_MODEL", "gemini-3.8-flash")
-                    content = _call_gemini(system, user, model, _env("GEMINI_API_KEY"), image_png)
+                    content = _call_gemini(system, user, model, _env("GEMINI_API_KEY"), image_png, pdf_bytes)
                     model = gemini_model_in_use()
                 raw = _parse(content)
                 got, items = _normalise(raw, fields)
@@ -265,8 +273,16 @@ def run(text: str, fields=None, want_line_items=False, image_png: bytes = None, 
                 out["ms"] = int((time.time() - t0) * 1000)
                 return out
             except Exception as e:  # noqa: BLE001 - any failure must degrade, not crash
-                out["attempts"].append({"provider": provider, "attempt": attempt, "result": f"{type(e).__name__}: {str(e)[:160]}"})
-                out["error"] = f"{provider}: {type(e).__name__}: {str(e)[:200]}"
+                detail = str(e)
+                body = getattr(e, "read", None)
+                if callable(body):  # urllib HTTPError: include the server's message, it names the real cause
+                    try:
+                        detail += " " + body().decode("utf-8", "replace")[:300]
+                    except Exception:  # noqa: BLE001
+                        pass
+                out["attempts"].append({"provider": provider, "attempt": attempt, "result": f"{type(e).__name__}: {detail[:300]}"})
+                out["provider"] = provider
+                out["error"] = f"{provider}: {type(e).__name__}: {detail[:400]}"
                 if _is_retryable(e) and attempt <= max_retries:
                     time.sleep(1.5 * attempt)
                     continue
