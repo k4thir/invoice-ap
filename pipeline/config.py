@@ -8,7 +8,7 @@ DATA_DIR = ROOT / "data"
 SAMPLES_DIR = DATA_DIR / "samples"
 RUNS_FILE = DATA_DIR / "runs.jsonl"          # local run history (day 2 adds HF Dataset sync)
 
-BUYER_NAME = "KatLabs Pvt Ltd"
+BUYER_NAME = "Meridian Components Pvt Ltd"
 BUYER_GSTIN = "27AAHCM6789N1Z6"
 BUYER_STATE_CODE = "27"
 CURRENCY = "INR"
